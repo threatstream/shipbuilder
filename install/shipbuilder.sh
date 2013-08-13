@@ -38,7 +38,11 @@ test -z "${sbHost}" && autoDetectServer
 test -z "${lxcFs}" && autoDetectFilesystem
 
 test -z "${sbHost}" && echo 'error: missing required parameter: -S [shipbuilder-host]' 1>&2 && exit 1
-test -z "${action}" && echo 'error: missing required parameter: action' 1>&2 && exit 1
+#test -z "${action}" && echo 'error: missing required parameter: action' 1>&2 && exit 1
+if test -z "${action}"; then
+    echo 'info: action defaulted to: install'
+    action='install'
+fi
 
 
 verifySshAndSudoForHosts "${sbHost}"

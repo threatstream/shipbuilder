@@ -1,11 +1,17 @@
-PASS="echo '' >/dev/null"
-
 function abortIfNonZero() {
-    # @param $1 return code/exit status (e.g. $?)
+    # @param $1 command return code/exit status (e.g. $?, '0', '1').
     # @param $2 error message if exit status was non-zero.
     local rc=$1
     local what=$2
-    test $rc -ne 0 && echo "error: ${what} exited with non-zero status ${rc}" 1>&2 && exit $rc
+    test $rc -ne 0 && echo "error: ${what} exited with non-zero status ${rc}" 1>&2 && exit $rc || :
+}
+
+function warnIfNonZero() {
+    # @param $1 command return code/exit status (e.g. $?, '0', '1').
+    # @param $2 error message if exit status was non-zero.
+    local rc=$1
+    local what=$2
+    test $rc -ne 0 && echo "warn: ${what} exited with non-zero status ${rc}" 1>&2 || :
 }
 
 function autoDetectServer() {
@@ -56,7 +62,7 @@ function initSbServerKeys() {
     function abortIfNonZero() {
         local rc=$1
         local what=$2
-        test $rc -ne 0 && echo "remote: error: ${what} exited with non-zero status ${rc}" && exit $rc
+        test $rc -ne 0 && echo "remote: error: ${what} exited with non-zero status ${rc}" && exit $rc || :
     }
     if ! test -e ~/.ssh/id_rsa.pub; then
         echo "remote: info: generating a new private/public key-pair for main user"
@@ -146,7 +152,7 @@ function installAccessForSshHost() {
     function abortIfNonZero() {
         local rc=$1
         local what=$2
-        test $rc -ne 0 && echo "remote: error: ${what} exited with non-zero status ${rc}" && exit $rc
+        test $rc -ne 0 && echo "remote: error: ${what} exited with non-zero status ${rc}" && exit $rc || :
     }
     echo "remote: checking main user.."
     if test -z "$(grep "'"${unprivilegedPubKey}"'" ~/.ssh/authorized_keys)" || test -z "$(sudo grep "'"${rootPubKey}"'" ~/.ssh/authorized_keys)"; then
@@ -259,31 +265,42 @@ function prepareNode() {
             abortIfNonZero $? "mounting ${device}"
 
         elif test "${lxcFs}" = 'zfs'; then
-            # Create ZFS pool/tank.
-            sudo zpool destroy tank 2>/dev/null
-            test -e '/tank' && sudo mkdir /tank || $PASS
-            # Format the device with any filesystem (mkfs.ext4 is fast).
-            sudo mkfs.ext4 -q $device
-            # Attach the pool to a device.
+            zfsPool='tank'
+
+            # Create ZFS pool mount point.
+            test ! -d "/${zfsPool}" && sudo rm -rf "/${zfsPool}" && sudo mkdir "/${zfsPool}" || :
+            abortIfNonZero $? "creating /${zfsPool} mount point"
+
+            # Create ZFS pool and attach to a device.
             # NB: ashift=12 is recommended by ZFS website.
-            sudo zpool create -o ashift=12 tank $device
-            abortIfNonZero $? "command 'sudo zpool create -o ashift=12 tank ${device}'"
-            # Create lxd volume.
-            sudo zfs create -o compression=on tank/lxc
-            abortIfNonZero $? "command 'sudo zfs create -o compression=on tank/lxc'"
-            # Create git volume.
-            sudo zfs create -o compression=on tank/git
-            abortIfNonZero $? "command 'sudo zfs create -o compression=on tank/git'"
+            if test -z "$(sudo zfs list -o name,mountpoint | sed '1d' | grep "^${zfsPool}.*\/${zfsPool}"'$')"; then
+                # Format the device with any filesystem (mkfs.ext4 is fast).
+                sudo mkfs.ext4 -q $device
+                abortIfNonZero $? "command 'sudo mkfs.ext4 -q ${device}'"
+
+                sudo zpool create -o ashift=12 $zfsPool $device
+                abortIfNonZero $? "command 'sudo zpool create -o ashift=12 ${zfsPool} ${device}'"
+            fi
+
+            # Create lxc and git volumes.
+            for volume in lxc git; do
+                test -z "$(sudo zfs list -o name | sed '1d' | grep "^${zfsPool}\/${volume}")" && sudo zfs create -o compression=on $zfsPool/$volume || :
+                abortIfNonZero $? "command 'sudo zfs create -o compression=on ${zfsPool}/${volume}'"
+            done
+
             # Unmount all ZFS volumes.
             sudo zfs umount -a
             abortIfNonZero $? "command 'sudo zfs umount -a'"
+
             # Export the pool.
             sudo zpool export tank
             abortIfNonZero $? "command 'sudo zpool export tank'"
-            # Re-import the zfs pool, this will mount the volume.
+
+            # Import the zfs pool, this will mount the volumes.
             sudo zpool import tank
             abortIfNonZero $? "command 'sudo zpool import tank'"
 
+            # Add zfsroot to lxc configuration.
             test -z "$(sudo grep '^zfsroot=' /etc/lxc/lxc.conf 2>/dev/null)" && echo 'zfsroot=tank' | sudo tee -a /etc/lxc/lxc.conf || sudo sed -i 's/^zfsroot=.*/zfsroot=tank/g' /etc/lxc/lxc.conf
             abortIfNonZero $? 'application of lxc zfsroot setting'
 
@@ -295,11 +312,13 @@ function prepareNode() {
             abortIfNonZero $? "command 'sudo chmod 777 /tank/git'"
 
             # Link /var/lib/lxc to /tank/lxc, and then link /mnt/build/lxc to /var/lib/lxc.
-            test -d '/var/lib/lxc' && sudo mv /var/lib/lxc{,.bak} || $PASS
-            test ! -h '/var/lib/lxc' && sudo ln -s /tank/lxc /var/lib/lxc || $PASS
-            test ! -h '/mnt/build/lxc' && sudo ln -s /tank/lxc /mnt/build/lxc || $PASS
-            test ! -h '/mnt/build/git' && sudo ln -s /tank/git /mnt/build/git || $PASS
-            test ! -h '/git' && sudo ln -s /tank/git /git || $PASS
+            test -d '/var/lib/lxc' && sudo mv /var/lib/lxc{,.bak} || :
+            test ! -h '/var/lib/lxc' && sudo ln -s /tank/lxc /var/lib/lxc || :
+            test ! -h '/mnt/build/lxc' && sudo ln -s /tank/lxc /mnt/build/lxc || :
+
+            # Also might as well resolve the git linkage while we're here.
+            test ! -h '/mnt/build/git' && sudo ln -s /tank/git /mnt/build/git || :
+            test ! -h '/git' && sudo ln -s /tank/git /git || :
 
         else
             echo "error: prepareNode() got unrecognized filesystem \"${lxcFs}\"" 1>&2
@@ -405,15 +424,15 @@ function installGo() {
 
 function gitLinkage() {
     echo 'info: creating and linking /mnt/build/git -> /git'
-    test ! -d '/mnt/build/git' && test ! -h '/mnt/build/git' && sudo mkdir -p /mnt/build/git || $PASS
-    test -d '/mnt/build/git' && sudo chown 777 /mnt/build/git || $PASS
-    test ! -h '/git' && sudo ln -s /mnt/build/git /git || $PASS
+    test ! -d '/mnt/build/git' && test ! -h '/mnt/build/git' && sudo mkdir -p /mnt/build/git || :
+    test -d '/mnt/build/git' && sudo chown 777 /mnt/build/git || :
+    test ! -h '/git' && sudo ln -s /mnt/build/git /git || :
     echo 'info: git linkage succeeded'
 }
 
 function buildEnv() {
     echo 'info: add build servers hostname configuration'
-    test ! -d /mnt/build/env && sudo rm -rf /mnt/build/env && sudo mkdir -p /mnt/build/env || $PASS
+    test ! -d /mnt/build/env && sudo rm -rf /mnt/build/env && sudo mkdir -p /mnt/build/env || :
     abortIfNonZero $? "creating directory /mnt/build/env"
     echo "${sbHost}" | sudo tee /mnt/build/env/SB_SSH_HOST
     abortIfNonZero $? "appending shipbuilder host to /mnt/build/env/SB_SSH_HOST"
@@ -479,7 +498,7 @@ function lxcInitBase() {
     sudo lxc-destroy -n base 2>/dev/null
 
     echo 'info: creating base lxc container'
-    sudo lxc-create -n base -B $lxcFs $(test "${lxcFs}" = 'zfs' && echo '--zfsroot=tank' || $PASS) -t ubuntu
+    sudo lxc-create -n base -B $lxcFs $(test "${lxcFs}" = 'zfs' && echo '--zfsroot=tank' || :) -t ubuntu
     abortIfNonZero $? "lxc-create base"
 
     echo 'info: configuring base lxc container..'
@@ -491,7 +510,7 @@ function lxcInitBase() {
 
 function lxcConfigBase() {
     echo "info: adding shipbuilder server's public-key to authorized_keys file in base container"
-    test ! -e "/mnt/build/lxc/base/rootfs/home/ubuntu/.ssh" && sudo mkdir /mnt/build/lxc/base/rootfs/home/ubuntu/.ssh || $PASS
+    test ! -e "/mnt/build/lxc/base/rootfs/home/ubuntu/.ssh" && sudo mkdir /mnt/build/lxc/base/rootfs/home/ubuntu/.ssh || :
     abortIfNonZero $? "base container .ssh directory"
 
     sudo cp ~/.ssh/id_rsa.pub /mnt/build/lxc/base/rootfs/home/ubuntu/.ssh/authorized_keys
@@ -564,7 +583,7 @@ function lxcConfigBuildPacks() {
         echo "info: initializing build-pack: ${buildPack}"
         packages="$(cat /mnt/build/build-packs/$buildPack/container-packages 2>/dev/null)"
         customCommands="$(cat /mnt/build/build-packs/$buildPack/container-custom-commands 2>/dev/null)"
-        lxcConfigBuildPack "${buildPack}" "${packages}" "${customCommands}"
+        lxcConfigBuildPack "${buildPack}" "${packages}" "${customCommands}" "${lxcFs}"
         echo 'info: build-pack initialized succeeded'
     done
 }
