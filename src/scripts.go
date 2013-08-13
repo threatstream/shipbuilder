@@ -118,7 +118,7 @@ def main(argv):
     # Start the specified container.
     log('cloning container: {0}'.format(container))
     subprocess.check_call(
-        ['/usr/bin/lxc-clone', '-s', '-B', 'btrfs', '-o', app, '-n', container],
+        ['/usr/bin/lxc-clone', '-s', '-B', '` + lxcFs + `', '-o', app, '-n', container],
         stdout=sys.stdout,
         stderr=sys.stderr
     )

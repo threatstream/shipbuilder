@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 
 source libfns.sh
 
-while getopts “H:S:c:h” OPTION; do
+while getopts "H:S:c:h" OPTION; do
     case $OPTION in
         h)
             echo "usage: $0 -H [load-balancer-host] -S [shipbuilder-host] [ACTION]" 1>&2
@@ -12,8 +12,8 @@ while getopts “H:S:c:h” OPTION; do
             echo 'This is the load-balancer installer.' 1>&2
             echo '' 1>&2
             echo '  ACTION                  Action to perform. Available actions are: install'
-            echo '  -H [load-balancer-host] Load-balancer hostname' 1>&2
-            echo '  -S [shipbuilder-host]   ShipBuilder server hostname' 1>&2
+            echo '  -H [load-balancer-host] Load-balancer user@hostname' 1>&2
+            echo '  -S [shipbuilder-host]   ShipBuilder server user@hostname (flag can be omitted if auto-detected from env/SB_SSH_HOST)' 1>&2
             exit 1
             ;;
         H)
