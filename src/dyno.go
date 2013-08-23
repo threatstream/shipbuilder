@@ -125,15 +125,17 @@ func (this *Server) newDynoGenerator(nodes []*Node, application string, version 
 	for _, node := range nodes {
 		running := false
 		nodeStatus := this.getNodeStatus(node)
-		// Determine if there is an identical app/version container already running on the node.
-		for _, container := range nodeStatus.Containers {
-			dyno, _ := containerToDyno(node.Host, container)
-			if dyno.Application == application && dyno.Version == version {
-				running = true
-				break
+		if nodeStatus.FreeMemoryMb > MIN_ALLOWED_DYNO_FREE_MB {
+			// Determine if there is an identical app/version container already running on the node.
+			for _, container := range nodeStatus.Containers {
+				dyno, _ := containerToDyno(node.Host, container)
+				if dyno.Application == application && dyno.Version == version {
+					running = true
+					break
+				}
 			}
+			allStatuses = append(allStatuses, NodeStatusRunning{nodeStatus, running})
 		}
-		allStatuses = append(allStatuses, NodeStatusRunning{nodeStatus, running})
 	}
 
 	if len(allStatuses) == 0 {

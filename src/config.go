@@ -51,6 +51,7 @@ const (
 	NODE_SYNC_TIMEOUT_SECONDS  = 180
 	DYNO_START_TIMEOUT_SECONDS = 120
 	DEPLOY_TIMEOUT_SECONDS     = 240
+	MIN_ALLOWED_DYNO_FREE_MB   = 400
 )
 
 // LDFLAGS can be specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.
