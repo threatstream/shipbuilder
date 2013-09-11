@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -39,19 +40,22 @@ type (
 )
 
 const (
-	APP_DIR                    = "/app"
-	LXC_DIR                    = "/var/lib/lxc"
-	DIRECTORY                  = "/mnt/build"
-	BINARY                     = "shipbuilder"
-	EXE                        = DIRECTORY + "/" + BINARY
-	CONFIG                     = DIRECTORY + "/config.json"
-	GIT_DIRECTORY              = "/git"
-	DEFAULT_NODE_USERNAME      = "ubuntu"
-	VERSION                    = "0.1.0"
-	NODE_SYNC_TIMEOUT_SECONDS  = 180
-	DYNO_START_TIMEOUT_SECONDS = 120
-	DEPLOY_TIMEOUT_SECONDS     = 240
-	MIN_ALLOWED_DYNO_FREE_MB   = 400
+	APP_DIR                         = "/app"
+	ENV_DIR                         = APP_DIR + "/env"
+	LXC_DIR                         = "/var/lib/lxc"
+	DIRECTORY                       = "/mnt/build"
+	BINARY                          = "shipbuilder"
+	EXE                             = DIRECTORY + "/" + BINARY
+	CONFIG                          = DIRECTORY + "/config.json"
+	GIT_DIRECTORY                   = "/git"
+	DEFAULT_NODE_USERNAME           = "ubuntu"
+	VERSION                         = "0.1.1"
+	NODE_SYNC_TIMEOUT_SECONDS       = 180
+	DYNO_START_TIMEOUT_SECONDS      = 120
+	DEPLOY_TIMEOUT_SECONDS          = 240
+	STATUS_MONITOR_INTERVAL_SECONDS = 15
+	MIN_ALLOWED_DYNO_FREE_MB        = 400
+	DEFAULT_SSH_PARAMETERS          = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
 )
 
 // LDFLAGS can be specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.
@@ -66,6 +70,7 @@ var (
 	defaultSshHost            string
 	defaultSshKey             string
 	defaultLxcFs              string
+	defaultZfsPool            string
 )
 
 // Global configuration.
@@ -74,14 +79,16 @@ var (
 	sshKey       = OverridableByEnv("SB_SSH_KEY", defaultSshKey)
 	awsKey       = OverridableByEnv("SB_AWS_KEY", defaultAwsKey)
 	awsSecret    = OverridableByEnv("SB_AWS_SECRET", defaultAwsSecret)
-	awsRegion    = getAwsRegion("SB_AWS_REGION", defaultAwsRegion)
+	awsRegion    = GetAwsRegion("SB_AWS_REGION", defaultAwsRegion)
 	s3BucketName = OverridableByEnv("SB_S3_BUCKET", defaultS3BucketName)
 	lxcFs        = OverridableByEnv("LXC_FS", defaultLxcFs)
+	zfsPool      = OverridableByEnv("ZFS_POOL", defaultZfsPool)
 )
 
 var (
-	configLock           sync.Mutex
-	syncLoadBalancerLock sync.Mutex
+	defaultSshParametersList = strings.Split(DEFAULT_SSH_PARAMETERS, " ")
+	configLock               sync.Mutex
+	syncLoadBalancerLock     sync.Mutex
 )
 
 func (this *Application) LxcDir() string {
@@ -96,8 +103,28 @@ func (this *Application) AppDir() string {
 func (this *Application) SrcDir() string {
 	return this.AppDir() + "/src"
 }
+func (this *Application) LocalAppDir() string {
+	return APP_DIR
+}
+func (this *Application) LocalSrcDir() string {
+	return APP_DIR + "/src"
+}
+func (this *Application) BaseContainerName() string {
+	return "base-" + this.BuildPack
+}
 func (this *Application) GitDir() string {
 	return GIT_DIRECTORY + "/" + this.Name
+}
+
+// Get total requested number of Dynos (based on Processes).
+func (this *Application) TotalRequestedDynos() int {
+	n := 0
+	for _, value := range this.Processes {
+		if value > 0 { // Ensure negative values are never added.
+			n += value
+		}
+	}
+	return n
 }
 
 // Entire maintenance page URL (e.g. "http://example.com/static/maintenance.html").
@@ -177,6 +204,12 @@ func (this *Application) CalcPreviousVersion() (string, error) {
 	}
 	return "v" + strconv.Itoa(v-1), nil
 }
+func (this *Application) CreateBaseContainerIfMissing(e *Executor) error {
+	if !e.ContainerExists(this.Name) {
+		return e.CloneContainer(this.BaseContainerName(), this.Name)
+	}
+	return nil
+}
 
 func (this *Server) IncrementAppVersion(app *Application) (*Application, *Config, error) {
 	var updatedApp *Application
@@ -228,75 +261,7 @@ func (this *Server) getConfig(lock bool) (*Config, error) {
 	return &config, nil
 }
 
-// // This function exists to adhere to D.R.Y. WRT config updates.
-// // Only to be invoked by safe locking getters/setters, never externally!!!
-// func (this *Server) saveConfig(lock bool, fn func(*Config) error) error {
-// 	config, err := this.getConfig(lock)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	err = fn(config)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	if lock {
-// 		configLock.Lock()
-// 		defer configLock.Unlock()
-// 	}
-
-// 	f, err := os.Create(CONFIG)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer f.Close()
-// 	err = json.NewEncoder(f).Encode(config)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
-
-// // Only to be invoked by safe locking getters/setters, never externally!!!
-// func (this *Server) saveApplicationConfig(lock bool, app *Application) error {
-// 	return saveConfig(lock, func(config *Config) error {
-// 		// Update or append app.
-// 		found := false
-// 		for i, a := range config.Applications {
-// 			if a.Name == app.Name {
-// 				found = true
-// 				config.Applications[i] = app
-// 			}
-// 		}
-// 		if !found {
-// 			config.Applications = append(config.Applications, app)
-// 		}
-// 		return nil
-// 	})
-// }
-
-// // Only to be invoked by safe locking getters/setters, never externally!!!
-// func (this *Server) saveSystemConfig(lock bool, sys *System) error {
-// 	return saveConfig(lock, func(config *Config) error {
-// 		// Update System configuration.
-// 		config.System = sys
-// 		return nil
-// 	})
-// }
-
-// func (this *Server) withConfig(fn func(*Config) error) error {
-// 	cfg, err := this.getConfig()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	err = fn(cfg)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return this.saveConfig(cfg)
-// }
-
+// IMPORTANT: Only to be invoked by `WithPersistentConfig`.
 func (this *Server) writeConfig(config *Config) error {
 	f, err := os.Create(CONFIG)
 	if err != nil {
@@ -409,7 +374,7 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 		for proc, _ := range app.Processes {
 			if proc == "web" {
 				// Find and don't add `removeDynos`.
-				runningDynos, err := this.getRunningDynos(app.Name, proc)
+				runningDynos, err := this.GetRunningDynos(app.Name, proc)
 				if err != nil {
 					return err
 				}
@@ -477,7 +442,7 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 
 	for _, lb := range cfg.LoadBalancers {
 		err := e.Run("rsync",
-			"-azve", "ssh -o 'StrictHostKeyChecking no' -o 'BatchMode yes'",
+			"-azve", "ssh "+DEFAULT_SSH_PARAMETERS,
 			"/tmp/haproxy.cfg", "root@"+lb+":/etc/haproxy/",
 		)
 		if err != nil {
@@ -491,9 +456,44 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 		}
 	}
 
+	// Uddate `currentLoadBalancerConfig` with updated HAProxy configuration.
+	cfgBuffer := bytes.Buffer{}
+	err = HAPROXY_CONFIG.Execute(&cfgBuffer, lb)
+	if err != nil {
+		return err
+	}
+	this.currentLoadBalancerConfig = cfgBuffer.String()
+
+	// Pause briefly to ensure HAProxy has time to complete it's reload.
 	time.Sleep(time.Second * 1)
 
 	return nil
+}
+
+// The first time this method is invoked the current config will read from a load-balancer, if one is available.
+// Subsequent invocations will use the current version.
+// After a deployment, the `SyncLoadBalancers` method automatically updates `currentLoadBalancerConfig`.
+func (this *Server) GetActiveLoadBalancerConfig() (string, error) {
+	if len(this.currentLoadBalancerConfig) == 0 {
+		cfg, err := this.getConfig(true)
+		if err != nil {
+			return this.currentLoadBalancerConfig, err
+		}
+		if len(cfg.LoadBalancers) == 0 {
+			return this.currentLoadBalancerConfig, fmt.Errorf("There are currently no load-balancers configured to pull LB config from")
+		}
+
+		syncLoadBalancerLock.Lock()
+		defer syncLoadBalancerLock.Unlock()
+		this.currentLoadBalancerConfig, err = RemoteCommand(cfg.LoadBalancers[0], "sudo cat /etc/haproxy/haproxy.cfg")
+		if err != nil {
+			return this.currentLoadBalancerConfig, err
+		}
+	} else {
+		syncLoadBalancerLock.Lock()
+		defer syncLoadBalancerLock.Unlock()
+	}
+	return this.currentLoadBalancerConfig, nil
 }
 
 func PathExists(path string) (bool, error) {
@@ -544,7 +544,7 @@ func OverridableByEnv(key string, ldflagsValue string) string {
 }
 
 // Validate that the configured key exists in the provided options.
-func getAwsRegion(key string, ldflagsValue string) aws.Region {
+func GetAwsRegion(key string, ldflagsValue string) aws.Region {
 	regionKey := OverridableByEnv(key, ldflagsValue)
 	region, ok := aws.Regions[regionKey]
 	if !ok {

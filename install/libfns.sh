@@ -6,6 +6,10 @@ function abortIfNonZero() {
     test $rc -ne 0 && echo "error: ${what} exited with non-zero status ${rc}" 1>&2 && exit $rc || :
 }
 
+function abortWithError() {
+    echo "$1" 1>&2 && exit 1
+}
+
 function warnIfNonZero() {
     # @param $1 command return code/exit status (e.g. $?, '0', '1').
     # @param $2 error message if exit status was non-zero.
@@ -16,25 +20,38 @@ function warnIfNonZero() {
 
 function autoDetectServer() {
     # Attempts to auto-detect the server host by reading the contents of ../env/SB_SSH_HOST.
-    if [ -r "../env/SB_SSH_HOST" ]; then
+    if test -r '../env/SB_SSH_HOST'; then
         sbHost=$(head -n1 ../env/SB_SSH_HOST)
-        if [ -n "${sbHost}" ]; then
-            echo "info: auto-detected shipbuilder host: ${sbHost}"
-        fi
+        test -n "${sbHost}" && echo "info: auto-detected shipbuilder host: ${sbHost}"
     else
         echo 'warn: server auto-detection failed: no such file: ../env/SB_SSH_HOST' 1>&2
     fi
 }
 
 function autoDetectFilesystem() {
-    # Attempts to auto-detect the filesystem host by reading the contents of ../env/LXC_FS.
-    if [ -r "../env/LXC_FS" ]; then
+    # Attempts to auto-detect the target filesystem type by reading the contents of ../env/LXC_FS.
+    if test -r '../env/LXC_FS'; then
         lxcFs=$(head -n1 ../env/LXC_FS)
-        if [ -n "${lxcFs}" ]; then
-            echo "info: auto-detected lxc filesystem: ${lxcFs}"
-        fi
+        test -n "${lxcFs}" && echo "info: auto-detected lxc filesystem: ${lxcFs}"
     else
         echo 'warn: lxc filesystem auto-detection failed: no such file: ../env/LXC_FS' 1>&2
+    fi
+}
+
+function autoDetectZfsPool() {
+    # When fs type is 'zfs', attempt to auto-detect the zfs pool name to create by reading the contents of ../env/ZFS_POOL.
+    test -z "${lxcFs}" && autoDetectFilesystem # Attempt to ensure that the target filesystem type is available.
+    if test "${lxcFs}" = 'zfs'; then
+        if test -r '../env/ZFS_POOL'; then
+            zfsPool=$(head -n1 ../env/ZFS_POOL)
+            test -n "${zfsPool}" && echo "info: auto-detected zfs pool: ${zfsPool}"
+            # Validate to ensure zfs pool name won't conflict with typical ubuntu root-fs items.
+            for x in bin boot dev etc git home lib lib64 media mnt opt proc root run sbin selinux srv sys tmp usr var vmlinuz zfs-kstat; do
+                test "${zfsPool}" = "${x}" && echo "error: invalid zfs pool name detected, '${x}' is a forbidden because it may conflict with a system directory" 1>&2 && exit 1
+            done
+        else
+            echo 'warn: zfs pool auto-detection failed: no such file: ../env/ZFS_POOL' 1>&2
+        fi
     fi
 }
 
@@ -46,8 +63,8 @@ function verifySshAndSudoForHosts() {
         echo -n "info:     testing host ${sshHost} .. "
         result=$(ssh -o 'BatchMode yes' -o 'StrictHostKeyChecking no' -o 'ConnectTimeout 15' -q $sshHost 'sudo -n echo "succeeded" 2>/dev/null')
         rc=$?
-        test $rc -ne 0 && echo 'failed' && echo "error: ssh connection test failed for host: ${sshHost} (exited with status code: ${rc})" 1>&2 && exit 1
-        test -z "${result}" && echo 'failed' && echo "error: sudo access test failed for host: ${sshHost}" 1>&2 && exit 1
+        test $rc -ne 0 && echo 'failed' && abortWithError "error: ssh connection test failed for host: ${sshHost} (exited with status code: ${rc})"
+        test -z "${result}" && echo 'failed' && abortWithError "error: sudo access test failed for host: ${sshHost}"
         echo 'succeeded'
     done
 }
@@ -180,8 +197,8 @@ function installLxc() {
     test -z "${lxcFs}" && echo 'error: installLxc() missing required parameter: $lxcFs' 1>&2 && exit 1
     echo 'info: a supported version of lxc must be installed (as of 2013-07-02, `buntu comes with 0.7.x by default, we require is 0.9.0 or greater)'
     echo 'info: adding lxc daily ppa'
-    sudo add-apt-repository -y ppa:ubuntu-lxc/daily
-    abortIfNonZero $? "command 'sudo add-apt-repository -y ppa:ubuntu-lxc/daily'"
+    sudo apt-add-repository -y ppa:ubuntu-lxc/daily
+    abortIfNonZero $? "command 'sudo apt-add-repository -y ppa:ubuntu-lxc/daily'"
     sudo apt-get update
     abortIfNonZero $? "command 'sudo add-get update'"
     sudo apt-get install -y lxc lxc-templates
@@ -189,18 +206,10 @@ function installLxc() {
 
     echo "info: installed version $(lxc-version) (should be >= 0.9.0)"
 
-    if test "${lxcFs}" = 'zfs'; then
-        echo 'info: adding zfs ppa'
-        sudo add-apt-repository -y ppa:zfs-native/stable
-        abortIfNonZero $? "command 'add-apt-repository -y ppa:zfs-native/stable'"
-        sudo apt-get update
-        abortIfNonZero $? "command 'sudo apt-get update'"
-        sudo apt-get install -y ubuntu-zfs
-        abortIfNonZero $? "command 'sudo apt-get install -y ubuntu-zfs'"
-    fi
+    # Add supporting package(s) for selected filesystem type.
+    local fsPackages="$(test "${lxcFs}" = 'btrfs' && echo 'btrfs-tools' || :) $(test "${lxcFs}" = 'zfs' && echo 'zfs-fuse' || :)"
 
-    local maybeBtrfs=$(test "${lxcFs}" = 'btrfs' && echo 'btrfs-tools ')
-    local required="${maybeBtrfs}git mercurial bzr build-essential bzip2 daemontools lxc lxc-templates ntp ntpdate"
+    local required="${fsPackages} git mercurial bzr build-essential bzip2 daemontools ntp ntpdate"
     echo "info: installing required build-server packages: ${required}"
     sudo apt-get install -y $required
     abortIfNonZero $? "command 'apt-get install -y ${required}'"
@@ -216,13 +225,16 @@ function prepareNode() {
     # @param $1 $device to format and use for new mount.
     # @param $2 $lxcFs lxc filesystem to use (zfs, btrfs are both supported).
     # @param $3 $swapDevice to format and use as for swap (optional).
+    # @param $4 $zfsPool zfs pool name to create (only required when lxc filesystem is zfs).
     local device=$1
     local lxcFs=$2
     local swapDevice=$3
+    local zfsPool=$4
     test "${device}" = "${swapDevice}" && echo 'error: prepareNode() device & swapDevice must be different' 1>&2 && exit 1
     test -z "${device}" && echo 'error: prepareNode() missing required parameter: $device' 1>&2 && exit 1
     test ! -e "${device}" && echo "error: unrecognized device '${device}'" 1>&2 && exit 1
     test -z "${lxcFs}" && echo 'error: prepareNode() missing required parameter: $lxcFs' 1>&2 && exit 1
+    test "${lxcFs}" = 'zfs' && test -z "${zfsPool}" && echo 'error: prepareNode() missing required zfs parameter: $zfsPool' 1>&2 && exit 1
 
     installLxc $lxcFs
 
@@ -247,6 +259,9 @@ function prepareNode() {
         echo "info: ${device} is already formatted with ${lxcFs}"
 
     else
+        # Purge any pre-existing fstab /mnt entries.
+        sudo sed -i '/.*[ \t]\/mnt[ \t].*/d' /etc/fstab
+
         echo "info: formatting ${device} with ${lxcFs}"
         if test "${lxcFs}" = 'btrfs'; then
             sudo mkfs.btrfs $device
@@ -268,14 +283,11 @@ function prepareNode() {
             abortIfNonZero $? "mounting ${device}"
 
         elif test "${lxcFs}" = 'zfs'; then
-            zfsPool='tank'
-
             # Create ZFS pool mount point.
             test ! -d "/${zfsPool}" && sudo rm -rf "/${zfsPool}" && sudo mkdir "/${zfsPool}" || :
             abortIfNonZero $? "creating /${zfsPool} mount point"
 
             # Create ZFS pool and attach to a device.
-            # NB: ashift=12 is recommended by ZFS website.
             if test -z "$(sudo zfs list -o name,mountpoint | sed '1d' | grep "^${zfsPool}.*\/${zfsPool}"'$')"; then
                 # Format the device with any filesystem (mkfs.ext4 is fast).
                 sudo mkfs.ext4 -q $device
@@ -283,7 +295,7 @@ function prepareNode() {
 
                 sudo zpool destroy $zfsPool 2>/dev/null
 
-                sudo zpool create -o ashift=12 $zfsPool $device
+                sudo zpool create $zfsPool $device
                 abortIfNonZero $? "command 'sudo zpool create -o ashift=12 ${zfsPool} ${device}'"
             fi
 
@@ -298,32 +310,36 @@ function prepareNode() {
             abortIfNonZero $? "command 'sudo zfs umount -a'"
 
             # Export the pool.
-            sudo zpool export tank
-            abortIfNonZero $? "command 'sudo zpool export tank'"
+            sudo zpool export $zfsPool
+            abortIfNonZero $? "command 'sudo zpool export ${zfsPool}'"
 
             # Import the zfs pool, this will mount the volumes.
-            sudo zpool import tank
-            abortIfNonZero $? "command 'sudo zpool import tank'"
+            sudo zpool import $zfsPool
+            abortIfNonZero $? "command 'sudo zpool import ${zfsPool}'"
+
+            # Enable zfs snapshot listing.
+            sudo zpool set listsnapshots=on $zfsPool
+            abortIfNonZero $? "command 'sudo zpool set listsnapshots=on ${zfsPool}'"
 
             # Add zfsroot to lxc configuration.
-            test -z "$(sudo grep '^zfsroot=' /etc/lxc/lxc.conf 2>/dev/null)" && echo 'zfsroot=tank' | sudo tee -a /etc/lxc/lxc.conf || sudo sed -i 's/^zfsroot=.*/zfsroot=tank/g' /etc/lxc/lxc.conf
+            test -z "$(sudo grep '^zfsroot=' /etc/lxc/lxc.conf 2>/dev/null)" && echo "zfsroot=${zfsPool}" | sudo tee -a /etc/lxc/lxc.conf || sudo sed -i "s/^zfsroot=.*/zfsroot=${zfsPool}/g" /etc/lxc/lxc.conf
             abortIfNonZero $? 'application of lxc zfsroot setting'
 
             # Remove any fstab entry for the ZFS device (ZFS will auto-mount one pool).
             sudo sed -i "/.*$(echo "${device}" | sed 's/\//\\\//g').*/d" /etc/fstab
 
-            # Chmod 777 /tank/git
-            sudo chmod 777 /tank/git
-            abortIfNonZero $? "command 'sudo chmod 777 /tank/git'"
+            # Chmod 777 /$zfsPool/git
+            sudo chmod 777 /$zfsPool/git
+            abortIfNonZero $? "command 'sudo chmod 777 /${zfsPool}/git'"
 
-            # Link /var/lib/lxc to /tank/lxc, and then link /mnt/build/lxc to /var/lib/lxc.
+            # Link /var/lib/lxc to /${zfsPool}/lxc, and then link /mnt/build/lxc to /var/lib/lxc.
             test -d '/var/lib/lxc' && sudo mv /var/lib/lxc{,.bak} || :
-            test ! -h '/var/lib/lxc' && sudo ln -s /tank/lxc /var/lib/lxc || :
-            test ! -h '/mnt/build/lxc' && sudo ln -s /tank/lxc /mnt/build/lxc || :
+            test ! -h '/var/lib/lxc' && sudo ln -s /$zfsPool/lxc /var/lib/lxc || :
+            test ! -h '/mnt/build/lxc' && sudo ln -s /$zfsPool/lxc /mnt/build/lxc || :
 
             # Also might as well resolve the git linkage while we're here.
-            test ! -h '/mnt/build/git' && sudo ln -s /tank/git /mnt/build/git || :
-            test ! -h '/git' && sudo ln -s /tank/git /git || :
+            test ! -h '/mnt/build/git' && sudo ln -s /$zfsPool/git /mnt/build/git || :
+            test ! -h '/git' && sudo ln -s /$zfsPool/git /git || :
 
         else
             echo "error: prepareNode() got unrecognized filesystem \"${lxcFs}\"" 1>&2
@@ -353,6 +369,9 @@ function prepareNode() {
 
     if ! test -z "${swapDevice}" && test -e "${swapDevice}"; then
         echo "info: activating swap device or partition: ${swapDevice}"
+        # Purge any pre-existing fstab entries before adding the swap device.
+        sudo sed -i "/^$(echo "${swapDevice}" | sed 's/\//\\&/g')[ \t].*/d" /etc/fstab
+        abortIfNonZero $? "purging pre-existing ${swapDevice} entries from /etc/fstab"
         echo "${swapDevice} none swap sw 0 0" | sudo tee -a /etc/fstab 1>/dev/null
         sudo swapoff --all
         abortIfNonZero $? "adding ${swapDevice} to /etc/fstab"
@@ -360,6 +379,15 @@ function prepareNode() {
         abortIfNonZero $? "mkswap ${swapDevice}"
         sudo swapon --all
         abortIfNonZero $? "sudo swapon --all"
+    fi
+
+    # Install updated kernel if running Ubuntu 12.x series so lxc-attach will work.
+    majorVersion=$(lsb_release --release | sed 's/^[^0-9]*\([0-9]*\)\..*$/\1/')
+    if test $majorVersion -eq 12; then
+        echo 'info: installing 3.8 or newer kernel, a system restart will be required to complete installation'
+        sudo apt-get install -y linux-generic-lts-raring-eol-upgrade
+        abortIfNonZero $? 'installing linux-generic-lts-raring-eol-upgrade'
+        echo 1 | sudo tee -a /tmp/SB_RESTART_REQUIRED
     fi
 
     echo 'info: prepareNode() succeeded'
@@ -610,24 +638,33 @@ function prepareServerPart1() {
     # @param $2 device to format and use for new mount.
     # @param $3 lxc filesystem to use.
     # @param $4 $swapDevice to format and use as for swap (optional).
+    # @param $5 $zfsPool zfs pool name to create (only required when lxc filesystem is zfs).
     sbHost=$1
     device=$2
     lxcFs=$3
     local swapDevice=$4
+    local zfsPool=$5
     test -z "${sbHost}" && echo 'error: prepareServerPart1(): missing required parameter: shipbuilder host' 1>&2 && exit 1
     test -z "${device}" && echo 'error: prepareServerPart1(): missing required parameter: device' 1>&2 && exit 1
     test -z "${lxcFs}" && echo 'error: prepareServerPart1(): missing required parameter: lxcFs' 1>&2 && exit 1
     test "${device}" = "${swapDevice}" && echo 'error: prepareServerPart1() device & swapDevice must be different' 1>&2 && exit 1
-    prepareNode $device $lxcFs $swapDevice
+    test "${lxcFs}" = 'zfs' && test -z "${zfsPool}" && echo 'error: prepareServerPart1() missing required zfs parameter: $zfsPool' 1>&2 && exit 1
+
+    prepareNode $device $lxcFs $swapDevice $zfsPool
     abortIfNonZero $? 'prepareNode() failed'
+
     installGo
     abortIfNonZero $? 'installGo() failed'
+
     gitLinkage
     abortIfNonZero $? 'gitLinkage() failed'
+
     buildEnv
     abortIfNonZero $? 'buildEnv() failed'
+
     rsyslogLoggingListeners
     abortIfNonZero $? 'rsyslogLoggingListeners() failed'
+
     echo 'info: prepareServerPart1() succeeded'
 }
 
@@ -635,12 +672,16 @@ function prepareServerPart2() {
     # @param $1 lxc filesystem to use.
     local lxcFs=$1
     test -z "${lxcFs}" && echo 'error: prepareServerPart2() missing required parameter: $lxcFs' 1>&2 && exit 1
+
     lxcInitBase $lxcFs
     abortIfNonZero $? 'lxcInitBase() failed'
+
     lxcConfigBase $lxcFs
     abortIfNonZero $? 'lxcConfigBase() failed'
+
     lxcConfigBuildPacks $lxcFs
     abortIfNonZero $? 'lxcConfigBuildPacks() failed'
+
     echo 'info: prepareServerPart2() succeeded'
 }
 

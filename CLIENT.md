@@ -1,7 +1,7 @@
 Client Commands
 ---------------
 
-Build the client by running `./build.sh -f` (-f is for fast-mode).
+Build the client by running `./build.sh`.
 
 Note:
 
@@ -110,13 +110,6 @@ __config:remove__
     config:remove [variable-name].. -a[application-name]
 
 Delete one or more configuration environment variables for the named application. Redeploys the app.
-
-
-__console__
-
-    console -a[application-name]
-
-Starts up a temporary container on a node and hooks the current connection to it.
 
 
 __deploy__
@@ -240,6 +233,13 @@ __rollback__
     rollback [version] -a[application-name]
 
 Rollback an application to a specific version. Note: Version is not optional.
+
+
+__run__
+
+    run [shell-command?] -a[application-name]
+
+Starts up a temporary container and hooks the current connection to a shell.  If `shell-command` is omitted, by default a bash shell will launched.
 
 
 Project Compilation

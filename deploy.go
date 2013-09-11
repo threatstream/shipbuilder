@@ -29,6 +29,7 @@ var (
 		"SB_HAPROXY_CREDENTIALS": "main.defaultHaProxyCredentials",
 		"SB_HAPROXY_STATS":       "main.defaultHaProxyStats",
 		"LXC_FS":                 "main.defaultLxcFs",
+		"ZFS_POOL":               "main.defaultZfsPool",
 	}
 	deployerScriptContent = `#!/bin/bash
 ################################################################################
@@ -50,10 +51,11 @@ echo 'info: fetching dependencies'
 #     ...
 # )
 # and appropriately filters the list down to the projects dependencies.
-dependencies=$(find . -wholename '*.go' -exec awk '{ if ($1 ~ /^import/ && $2 ~ /[(]/) { s=1; next; } if ($1 ~ /[)]/) { s=0; } if (s) print; }' {} \; | grep -v '^[^\.]*$' | tr -d '\t' | tr -d '"' | sed 's/^\. \{1,\}//g' | sort | uniq)
+dependencies=$(find . -wholename '*.go' -exec awk '{ if ($1 ~ /^import/ && $2 ~ /[(]/) { s=1; next; } if ($1 ~ /[)]/) { s=0; } if (s) print; }' {} \; | grep -v '^[^\.]*$' | tr -d '\t' | tr -d '"' | sed 's/^\. \{1,\}//g' | sort | uniq | grep -v '^\/\/')
 for dependency in $dependencies; do
     echo "    retrieving: ${dependency}"
-    go get -u $dependency
+    if ! test -d "${GOPATH}/src/${dependency}"; then go get -u $dependency; rc=$?; else echo "        -> already exists, skipping"; rc=0; fi
+    test $rc -ne 0 && echo "error: retrieving dependency ${dependency} exited with non-zero status code ${rc}" && exit $rc;
 done
 
 echo 'info: building daemon'
@@ -113,7 +115,8 @@ func getLdFlags() string {
 				if err != nil {
 					return err
 				}
-				value := strings.TrimSpace(string(data))
+				// Only use the value from the first line of the file.
+				value := strings.TrimSpace(strings.Split(string(data), "\n")[0])
 				ldflags += "-X " + flagName + " " + value
 			}
             return nil
@@ -179,18 +182,18 @@ func deploy() error {
 
 	// Write out deployer script.
 	ioutil.WriteFile(DEPLOYER_SCRIPT_PATH, []byte(deployerScriptContent), 0777)
-	// If "-f|--fast" flag is passed, transform deployer script to not update dependencies which are already present.
-	if len(os.Args) > 1 && (os.Args[1] == "-f" || os.Args[1] == "--fast") {
-		fmt.Printf("INFO: FAST MODE ENABLED\n")
+	// If "-u|--update" flag is passed, transform deployer script to always update dependencies even when they are present.
+	if len(os.Args) > 1 && (os.Args[1] == "-u" || os.Args[1] == "--update") {
+		fmt.Printf("info: dependency updates will be forced\n")
 		run("bash", "-c",
-			`sed -i.bak 's/go get -u .*/if ! \[ -d "\$GOPATH\/src\/\${dependency}" \]; then &; else echo "        -> already exists, skipping"; fi/g' '`+DEPLOYER_SCRIPT_PATH+`'; rm -f '`+DEPLOYER_SCRIPT_PATH+`.bak'`,
+			`sed -i.bak 's/if ! test -d "\${GOPATH}\/src\/\${dependency}"; then go get -u \$dependency; rc=\$?; else echo "        -> already exists, skipping"; rc=0; fi/go get -u \${dependency}; rc=\$?/g' '`+DEPLOYER_SCRIPT_PATH+`'; rm -f '`+DEPLOYER_SCRIPT_PATH+`.bak'`,
 		)
 	}
 
 	// Upload latest code + deployment shell script to the server.
 	err := run("bash", "-c", `
 echo 'compressing..'
-tar -czf '`+COMPRESSED_PATH+`' .
+tar --exclude ./shipbuilder --exclude ./.git -czf '`+COMPRESSED_PATH+`' .
 echo 'uploading..'
 chmod a+x '`+DEPLOYER_SCRIPT_PATH+`'
 rsync -azve 'ssh -i "`+sshKey+`" -o "StrictHostKeyChecking no" -o "BatchMode yes"' '`+COMPRESSED_PATH+`' '`+DEPLOYER_SCRIPT_PATH+`' `+sshHost+`:/tmp/
@@ -223,7 +226,7 @@ ssh -i '`+sshKey+`' -o 'StrictHostKeyChecking no' `+sshHost+` /bin/bash '`+DEPLO
 func main() {
 	err := deploy()
 	if err != nil {
-		fmt.Println(err)
+		panic(err)
 	}
 }
 

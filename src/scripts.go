@@ -10,17 +10,17 @@ import (
 
 const (
 	PRE_RECEIVE = `#!/bin/bash
-while read oldrev newrev refname
-do
+while read oldrev newrev refname; do
   ` + EXE + ` pre-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
-done
-`
+done`
+
 	POST_RECEIVE = `#!/bin/bash
-while read oldrev newrev refname
-do
+while read oldrev newrev refname; do
   ` + EXE + ` post-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
-done
-`
+done`
+
+	LOGIN_SHELL = `#!/usr/bin/env bash
+/usr/bin/envdir ` + ENV_DIR + ` /bin/bash`
 )
 
 var POSTDEPLOY = `#!/usr/bin/python -u
@@ -32,7 +32,7 @@ container = None
 log = lambda message: sys.stdout.write('[{0}] {1}\n'.format(container, message))
 
 def getIp(name):
-    with open('/var/lib/lxc/' + name + '/rootfs/app/ip') as f:
+    with open('` + LXC_DIR + `/' + name + '/rootfs/app/ip') as f:
         return f.read().split('/')[0]
 
 def modifyIpTables(action, chain, ip, port):
@@ -106,10 +106,7 @@ def main(argv):
     global container
     #print 'main argv={0}'.format(argv)
     container = argv[1]
-    process = argv[1].split('` + DYNO_DELIMITER + `')[-3] # Process is always 3 from the end.
-
-    app = container.rsplit('` + DYNO_DELIMITER + `', 3)[0] # Get rid of port + version.
-    port = container.split('` + DYNO_DELIMITER + `')[-1] # Port is always at the end.
+    app, version, process, port = container.split('` + DYNO_DELIMITER + `') # Format is app_version_process_port
 
     # For safety, even though it's unlikley, try to kill/shutdown any existing container with the same name.
     subprocess.call(['/usr/bin/lxc-stop -k -n {0} 1>&2 2>/dev/null'.format(container)], shell=True)
@@ -126,7 +123,7 @@ def main(argv):
     # This line, if present, will prevent the container from booting.
     #log('scrubbing any "lxc.cap.drop = mac_{0}" lines from container config'.format(container))
     subprocess.check_call(
-        ['sed', '-i', '/lxc.cap.drop = mac_{0}/d'.format(container), '/var/lib/lxc/{0}/config'.format(container)],
+        ['sed', '-i', '/lxc.cap.drop = mac_{0}/d'.format(container), '` + LXC_DIR + `/{0}/config'.format(container)],
         stdout=sys.stdout,
         stderr=sys.stderr
     )
@@ -144,10 +141,10 @@ while read line || [ -n "$line" ]; do
     process="${{line%%:*}}"
     command="${{line#*: }}"
     if [ "$process" == "{process}" ]; then
-        envdir ../env /bin/bash -c "${{command}} 2>&1 | /app/` + BINARY + ` logger -h{host} -a{app} -p{process}.{port}"
+        envdir ` + ENV_DIR + ` /bin/bash -c "${{command}} 2>&1 | /app/` + BINARY + ` logger -h{host} -a{app} -p{process}.{port}"
     fi
 done < Procfile'''.format(port=port, host=host.split('@')[-1], process=process, app=app)
-    runScriptFileName = '/var/lib/lxc/{0}/rootfs/app/run'.format(container)
+    runScriptFileName = '` + LXC_DIR + `/{0}/rootfs/app/run'.format(container)
     with open(runScriptFileName, 'w') as fh:
         fh.write(runScript)
     # Chmod to be executable.
@@ -180,13 +177,14 @@ done < Procfile'''.format(port=port, host=host.split('@')[-1], process=process, 
             try:
                 subprocess.check_call([
                     '/usr/bin/curl',
-                    '-sL',
-                    '-w', '"%{http_code} %{url_effective}\\n"',
+                    '--silent',
+                    '--output', '/dev/null',
+                    '--write-out', '%{http_code} %{url_effective}\n',
                     '{0}:{1}/'.format(ip, port),
-                    '-o', '/dev/null',
                 ], stderr=sys.stderr, stdout=sys.stdout)
             except subprocess.CalledProcessError, e:
-                sys.stderr.write('- curl http check failed: {0}\n'.format(e))
+                sys.stderr.write('- error: curl http check failed, {0}\n'.format(e))
+                sys.exit(1)
 
     else:
         log('- error retrieving ip')
@@ -199,6 +197,8 @@ var SHUTDOWN_CONTAINER = `#!/usr/bin/python -u
 
 import subprocess, sys, time
 
+lxcFs = '` + lxcFs + `'
+zfsPool = '` + zfsPool + `'
 container = None
 log = lambda message: sys.stdout.write('[{0}] {1}\n'.format(container, message))
 
@@ -247,7 +247,7 @@ def ipsForRulesMatchingPort(chain, port):
     # NB: 'exit 0' added to avoid exit status code 1 when there were no results.
     rawOutput = subprocess.check_output(
         [
-            '/sbin/iptables --table nat --list {0} --numeric | grep -E -o "[0-9.]+:{1}" | grep -E -o "^[^:]+"; exit 0' \
+            '/sbin/iptables --table nat --list {0} --numeric | grep -E --only-matching "[0-9.]+:{1}" | grep -E --only-matching "^[^:]+"; exit 0' \
                 .format(chain, port),
         ],
         shell=True,
@@ -255,15 +255,33 @@ def ipsForRulesMatchingPort(chain, port):
     ).strip()
     return rawOutput.split('\n') if len(rawOutput) > 0 else []
 
+def retriableCommand(*command):
+    for _ in range(0, 30):
+        try:
+            return subprocess.check_call(command, stdout=sys.stdout, stderr=sys.stderr)
+        except subprocess.CalledProcessError, e:
+            if 'dataset is busy' in str(e):
+                time.sleep(0.25)
+                continue
+            else:
+                raise e
+
 def main(argv):
     global container
     container = argv[1]
     port = container.split('` + DYNO_DELIMITER + `').pop()
 
-    # Stop all existing containers.
+    # Stop and destroy the container.
     log('stopping container')
     subprocess.check_call(['/usr/bin/lxc-stop', '-k', '-n', container], stdout=sys.stdout, stderr=sys.stderr)
-    subprocess.check_call(['/usr/bin/lxc-destroy', '-n', container], stdout=sys.stdout, stderr=sys.stderr)
+
+    if lxcFs == 'zfs':
+        try:
+            retriableCommand('/sbin/zfs', 'destroy', '-r', zfsPool + '/' + container)
+        except subprocess.CalledProcessError, e:
+            print 'warn: zfs destroy command failed: {0}'.format(e)
+
+    retriableCommand('/usr/bin/lxc-destroy', '-n', container)
 
     for chain in ('PREROUTING', 'OUTPUT'):
         rules = ipsForRulesMatchingPort(chain, port)
@@ -290,13 +308,14 @@ console none
 
 start on (local-filesystems and net-device-up IFACE!=lo)
 stop on [!12345]
-pre-start script
-    exec touch /app/ip /app/env/PORT
-    exec chown ubuntu:ubuntu /app/ip /app/PORT
-end script
 #exec su ` + DEFAULT_NODE_USERNAME + ` -c "/app/run"
 #exec /app/run
-exec start-stop-daemon --start -u ubuntu --exec /app/run`))
+pre-start script
+    touch /app/ip /app/env/PORT || true
+    chown ubuntu:ubuntu /app/ip /app/PORT || true
+end script
+exec start-stop-daemon --start -u ubuntu --exec /app/run
+`))
 
 	template.Must(HAPROXY_CONFIG.Parse(`
 global
@@ -327,7 +346,7 @@ frontend frontend
     option forwardfor
     option http-server-close
 {{range $app := .Applications}}
-    use_backend {{$app.Name}}{{if $app.Maintenance}}-maintenance{{end}} if { {{range .Domains}} hdr(host) -i {{.}} {{end}} }
+    {{if .Domains}}use_backend {{$app.Name}}{{if $app.Maintenance}}-maintenance{{end}} if { {{range .Domains}} hdr(host) -i {{.}} {{end}} }{{end}}
 {{end}}
 
 {{range .Applications}}

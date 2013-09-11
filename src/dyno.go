@@ -30,7 +30,8 @@ const (
 	DYNO_DELIMITER = "_"
 )
 
-func containerToDyno(host string, container string) (Dyno, error) {
+// NB: Container name format is: appName-version-process-port
+func ContainerToDyno(host string, container string) (Dyno, error) {
 	tokens := strings.Split(container, DYNO_DELIMITER)
 	if len(tokens) != 4 {
 		return Dyno{}, fmt.Errorf("Failed to parse container string '%v' into 4 tokens", container)
@@ -39,18 +40,30 @@ func containerToDyno(host string, container string) (Dyno, error) {
 		Host:        host,
 		Container:   container,
 		Application: tokens[0],
-		Process:     tokens[1],
-		Version:     tokens[2],
+		Version:     tokens[1],
+		Process:     tokens[2],
 		Port:        tokens[3],
 	}, nil
 }
 
-func (this *Dyno) shutdown(e Executor) error {
-	fmt.Fprintf(e.logger, "Shutting down dyno, host=%v app=%v proc=%v, version=%v port=%v", this.Host, this.Application, this.Process, this.Version, this.Port)
+func NodeStatusToDynos(nodeStatus *NodeStatus) ([]Dyno, error) {
+	dynos := make([]Dyno, len(nodeStatus.Containers))
+	for i, container := range nodeStatus.Containers {
+		dyno, err := ContainerToDyno(nodeStatus.Host, container)
+		if err != nil {
+			return dynos, err
+		}
+		dynos[i] = dyno
+	}
+	return dynos, nil
+}
+
+func (this *Dyno) Shutdown(e *Executor) error {
+	fmt.Fprintf(e.logger, "Shutting down dyno, host=%v app=%v version=%v proc=%v port=%v", this.Host, this.Application, this.Version, this.Process, this.Port)
 	return e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+this.Host, "sudo", "/tmp/shutdown_container.py", this.Container)
 }
 
-func (this *Server) getRunningDynos(application, process string) ([]Dyno, error) {
+func (this *Server) GetRunningDynos(application, process string) ([]Dyno, error) {
 	dynos := []Dyno{}
 
 	cfg, err := this.getConfig(true)
@@ -65,7 +78,7 @@ func (this *Server) getRunningDynos(application, process string) ([]Dyno, error)
 			continue
 		}
 		for _, container := range status.Containers {
-			dyno, err := containerToDyno(node.Host, container)
+			dyno, err := ContainerToDyno(node.Host, container)
 			if err != nil {
 				fmt.Printf("Container->Dyno parse failed: %v", err)
 			} else if dyno.Application == application && dyno.Process == process {
@@ -86,7 +99,7 @@ func (this *Server) selectNextDynos(nodes []*Node, application, process string, 
 		nodeStatus := this.getNodeStatus(node)
 		// Determine if there is an identical app/version container already running on the node.
 		for _, container := range nodeStatus.Containers {
-			dyno, _ := containerToDyno(node.Host, container)
+			dyno, _ := ContainerToDyno(node.Host, container)
 			if dyno.Application == application && dyno.Version == version {
 				running = true
 				break
@@ -106,7 +119,7 @@ func (this *Server) selectNextDynos(nodes []*Node, application, process string, 
 		for i := 0; true; i++ {
 			nodeStatus := allStatuses[i%len(allStatuses)].status
 			port := fmt.Sprint(this.getNextPort(&nodeStatus))
-			dyno, _ := containerToDyno(nodeStatus.Host, application+DYNO_DELIMITER+process+DYNO_DELIMITER+version+DYNO_DELIMITER+port)
+			dyno, _ := ContainerToDyno(nodeStatus.Host, application+DYNO_DELIMITER+version+DYNO_DELIMITER+process+DYNO_DELIMITER+port)
 			select {
 			case <-done:
 				break OUTER // Exit the infinite for-loop.
@@ -128,7 +141,7 @@ func (this *Server) newDynoGenerator(nodes []*Node, application string, version 
 		if nodeStatus.FreeMemoryMb > MIN_ALLOWED_DYNO_FREE_MB {
 			// Determine if there is an identical app/version container already running on the node.
 			for _, container := range nodeStatus.Containers {
-				dyno, _ := containerToDyno(node.Host, container)
+				dyno, _ := ContainerToDyno(node.Host, container)
 				if dyno.Application == application && dyno.Version == version {
 					running = true
 					break
@@ -159,7 +172,7 @@ func (this *DynoGenerator) next(process string) Dyno {
 	nodeStatus := this.statuses[this.position%len(this.statuses)].status
 	this.position++
 	port := fmt.Sprint(this.server.getNextPort(&nodeStatus, &this.usedPorts))
-	dyno, _ := containerToDyno(nodeStatus.Host, this.application+DYNO_DELIMITER+process+DYNO_DELIMITER+this.version+DYNO_DELIMITER+port)
+	dyno, _ := ContainerToDyno(nodeStatus.Host, this.application+DYNO_DELIMITER+this.version+DYNO_DELIMITER+process+DYNO_DELIMITER+port)
 	return dyno
 }
 
