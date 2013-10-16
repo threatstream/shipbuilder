@@ -47,7 +47,7 @@ func (this Command) Parse(args []string) ([]interface{}, error) {
 				flags[args[i][2:]] = args[i+1]
 				i++
 			} else {
-				return nil, fmt.Errorf("expected `%v=value` or `%v value` or", args[i], args[i])
+				return nil, fmt.Errorf("expected `%v=value` or `%v value`", args[i], args[i])
 			}
 		} else if strings.HasPrefix(args[i], "-") && len(args[i]) >= 1 {
 			if len(args[i]) > 1 {
@@ -170,6 +170,9 @@ func init() {
 		global("destroy", "apps:destroy", "Apps_Destroy",
 			required("app"),
 		),
+		global("clone", "apps:clone", "Apps_Clone",
+			required("oldApp"), required("newApp"),
+		),
 		global("apps", "apps:list", "Apps_List"),
 		reader("config:get", "config:get", "Config_Get",
 			required("app"), required("name"),
@@ -178,10 +181,10 @@ func init() {
 			required("app"),
 		),
 		writer("config:set", "config:add", "Config_Set",
-			required("app"), mapped("args"),
+			required("app"), optional("deferred", ""), mapped("args"),
 		),
 		writer("config:remove", "config:unset", "Config_Remove",
-			required("app"), list("names"),
+			required("app"), optional("deferred", ""), list("names"),
 		),
 		reader("run", "console", "Console",
 			required("app"), list("args"),
@@ -223,10 +226,10 @@ func init() {
 		reader("logs", "logs:get", "Logs_Get",
 			required("app"), optional("process", ""), optional("filter", ""),
 		),
-		writer("maintenance:off", "maint:off", "Maintenance_Off",
+		writer("maint:off", "maintenance:off", "Maintenance_Off",
 			required("app"),
 		),
-		writer("maintenance:on", "maint:on", "Maintenance_On",
+		writer("maint:on", "maintenance:on", "Maintenance_On",
 			required("app"),
 		),
 		reader("maintenance:status", "maintenance:status", "Maintenance_Status",
@@ -251,7 +254,7 @@ func init() {
 		reader("ps", "ps:list", "Ps_List",
 			required("app"),
 		),
-		reader("ps:scale", "ps:scale", "Ps_Scale",
+		reader("scale", "ps:scale", "Ps_Scale",
 			required("app"), mapped("args"),
 		),
 		writer("rollback", "rollback", "Rollback",

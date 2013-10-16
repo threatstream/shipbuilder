@@ -73,9 +73,25 @@ __apps:create__
 
     [apps:]create [application-name] [buildpack]
 
+Alternative flag combinations:
+    [apps:]create -a[application-name] [buildpack]
+
 Create an appication named `name` with the build pack `buildpack`. Available buildpacks are:
 
 * python
+* playframework2
+
+
+__apps:clone__
+
+    [apps:]clone [old-application-name] [new-application-name]
+
+Alternative flag combinations:
+    [apps:]clone -o[old-application-name] -n[new-application-name]
+    [apps:]clone --oldName=[old-application-name] --newName=[new-application-name]
+
+Clone (copy) an application with it's config and processes settings into a new app.
+
 
 __apps:destroy__
 
@@ -104,12 +120,16 @@ __config:set__
 
 Set one or more configuration environment variables for the named application. Redeploys the app.
 
+There is also a `--deferrable=1`/`-d1` flag which can be passed to cause the config change to take effect the next time the app is deployed (avoids the default immediate redeploy).
+
 
 __config:remove__
 
     config:remove [variable-name].. -a[application-name]
 
 Delete one or more configuration environment variables for the named application. Redeploys the app.
+
+There is also a `--deferrable=1`/`-d1` flag which can be passed to cause the config change to take effect the next time the app is deployed (avoids the default immediate redeploy).
 
 
 __deploy__

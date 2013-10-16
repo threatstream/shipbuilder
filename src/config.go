@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sendhub/logserver"
 	"launchpad.net/goamz/aws"
 )
 
@@ -40,22 +42,23 @@ type (
 )
 
 const (
-	APP_DIR                         = "/app"
-	ENV_DIR                         = APP_DIR + "/env"
-	LXC_DIR                         = "/var/lib/lxc"
-	DIRECTORY                       = "/mnt/build"
-	BINARY                          = "shipbuilder"
-	EXE                             = DIRECTORY + "/" + BINARY
-	CONFIG                          = DIRECTORY + "/config.json"
-	GIT_DIRECTORY                   = "/git"
-	DEFAULT_NODE_USERNAME           = "ubuntu"
-	VERSION                         = "0.1.1"
-	NODE_SYNC_TIMEOUT_SECONDS       = 180
-	DYNO_START_TIMEOUT_SECONDS      = 120
-	DEPLOY_TIMEOUT_SECONDS          = 240
-	STATUS_MONITOR_INTERVAL_SECONDS = 15
+	APP_DIR                            = "/app"
+	ENV_DIR                            = APP_DIR + "/env"
+	LXC_DIR                            = "/var/lib/lxc"
+	DIRECTORY                          = "/mnt/build"
+	BINARY                             = "shipbuilder"
+	EXE                                = DIRECTORY + "/" + BINARY
+	CONFIG                             = DIRECTORY + "/config.json"
+	GIT_DIRECTORY                      = "/git"
+	DEFAULT_NODE_USERNAME              = "ubuntu"
+	VERSION                            = "0.1.4"
+	NODE_SYNC_TIMEOUT_SECONDS          = 180
+	DYNO_START_TIMEOUT_SECONDS         = 120
+	LOAD_BALANCER_SYNC_TIMEOUT_SECONDS = 45
+	DEPLOY_TIMEOUT_SECONDS             = 240
+	STATUS_MONITOR_INTERVAL_SECONDS    = 15
+	DEFAULT_SSH_PARAMETERS             = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
 	MIN_ALLOWED_DYNO_FREE_MB        = 400
-	DEFAULT_SSH_PARAMETERS          = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
 )
 
 // LDFLAGS can be specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.
@@ -330,11 +333,29 @@ func (this *Server) WithApplication(name string, fn func(*Application, *Config) 
 	})
 }
 
-func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos []Dyno) error {
+// Returns the ShipBuilder log server ip:port to send HAProxy UDP logs to.
+// Autmatically takes care of transforming ssh hostname into just a hostname.
+func (this *Server) ResolveLogServerIpAndPort() (string, error) {
+	hostname := sshHost[int(math.Max(float64(strings.Index(sshHost, "@")+1), 0)):]
+	ipAddr, err := net.ResolveIPAddr("ip", hostname)
+	if err != nil {
+		return "", err
+	}
+	ip := ipAddr.IP.String()
+	port := strconv.Itoa(log.Port)
+	return ip + ":" + port, nil
+}
+
+func (this *Server) SyncLoadBalancers(e *Executor, addDynos []Dyno, removeDynos []Dyno) error {
 	syncLoadBalancerLock.Lock()
 	defer syncLoadBalancerLock.Unlock()
 
 	cfg, err := this.getConfig(true)
+	if err != nil {
+		return err
+	}
+
+	logServerIpAndPort, err := this.ResolveLogServerIpAndPort()
 	if err != nil {
 		return err
 	}
@@ -351,13 +372,21 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 		MaintenancePageFullPath string
 		MaintenancePageBasePath string
 		MaintenancePageDomain   string
-		HaProxyStatsEnabled     bool
-		HaProxyCredentials      string
 	}
 	type Lb struct {
-		Applications []*App
+		LogServerIpAndPort  string // ShipBuilder server ip:port to send HAProxy UDP logs to.
+		Applications        []*App
+		LoadBalancers       []string
+		HaProxyStatsEnabled bool
+		HaProxyCredentials  string
 	}
-	lb := &Lb{[]*App{}}
+	lb := &Lb{
+		LogServerIpAndPort:  logServerIpAndPort,
+		Applications:        []*App{},
+		LoadBalancers:       cfg.LoadBalancers,
+		HaProxyStatsEnabled: HaProxyStatsEnabled(),
+		HaProxyCredentials:  HaProxyCredentials(),
+	}
 
 	for _, app := range cfg.Applications {
 		a := &App{
@@ -368,8 +397,6 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 			MaintenancePageFullPath: app.MaintenancePageFullPath(),
 			MaintenancePageBasePath: app.MaintenancePageBasePath(),
 			MaintenancePageDomain:   app.MaintenancePageDomain(),
-			HaProxyStatsEnabled:     HaProxyStatsEnabled(),
-			HaProxyCredentials:      HaProxyCredentials(),
 		}
 		for proc, _ := range app.Processes {
 			if proc == "web" {
@@ -440,20 +467,57 @@ func (this *Server) SyncLoadBalancers(e Executor, addDynos []Dyno, removeDynos [
 		return err
 	}
 
+	type LbSyncResult struct {
+		lbHost string
+		err    error
+	}
+
+	syncChannel := make(chan LbSyncResult)
 	for _, lb := range cfg.LoadBalancers {
-		err := e.Run("rsync",
-			"-azve", "ssh "+DEFAULT_SSH_PARAMETERS,
-			"/tmp/haproxy.cfg", "root@"+lb+":/etc/haproxy/",
-		)
-		if err != nil {
-			return err
+		go func(lb string) {
+			c := make(chan error, 1)
+			go func() {
+				err := e.Run("rsync",
+					"-azve", "ssh "+DEFAULT_SSH_PARAMETERS,
+					"/tmp/haproxy.cfg", "root@"+lb+":/etc/haproxy/",
+				)
+				if err != nil {
+					c <- err
+					return
+				}
+				err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+lb,
+					`sudo /bin/bash -c 'if [ "$(sudo service haproxy status)" = "haproxy not running." ]; then sudo service haproxy start; else sudo service haproxy reload; fi'`,
+				)
+				if err != nil {
+					c <- err
+					return
+				}
+				c <- nil
+			}()
+			go func() {
+				time.Sleep(LOAD_BALANCER_SYNC_TIMEOUT_SECONDS * time.Second)
+				c <- fmt.Errorf("LB sync operation to '%v' timed out after %v seconds", lb, LOAD_BALANCER_SYNC_TIMEOUT_SECONDS)
+			}()
+			// Block until chan has something, at which point syncChannel will be notified.
+			syncChannel <- LbSyncResult{lb, <-c}
+		}(lb)
+	}
+
+	nLoadBalancers := len(cfg.LoadBalancers)
+	errors := []error{}
+	for i := 1; i <= nLoadBalancers; i++ {
+		syncResult := <-syncChannel
+		if syncResult.err != nil {
+			errors = append(errors, syncResult.err)
 		}
-		err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+lb,
-			`sudo /bin/bash -c 'if [ "$(sudo service haproxy status)" = "haproxy not running." ]; then sudo service haproxy start; else sudo service haproxy reload; fi'`,
-		)
-		if err != nil {
-			return err
-		}
+		fmt.Fprintf(e.logger, "%v/%v load-balancer sync finished (%v succeeded, %v failed, %v outstanding)\n", i, nLoadBalancers, i-len(errors), len(errors), nLoadBalancers-i)
+	}
+
+	// If all LB updates failed, abort with error.
+	if nLoadBalancers > 0 && len(errors) == nLoadBalancers {
+		err = fmt.Errorf("error: all load-balancer updates failed: %v", errors)
+		fmt.Fprintf(e.logger, "%v", err)
+		return err
 	}
 
 	// Uddate `currentLoadBalancerConfig` with updated HAProxy configuration.

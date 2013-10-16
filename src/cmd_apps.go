@@ -10,10 +10,16 @@ import (
 )
 
 func (this *Server) validateAppName(applicationName string) error {
-	if strings.ToLower(applicationName) == "base" {
-		return fmt.Errorf("Application name cannot be 'base'")
+	forbiddenNames := []string{"base"}
+	for bp, _ := range BUILD_PACKS {
+		forbiddenNames = append(forbiddenNames, "base-"+bp)
 	}
-	expr := `^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$`
+	for _, forbiddenName := range forbiddenNames {
+		if strings.ToLower(applicationName) == forbiddenName || strings.HasSuffix(strings.ToLower(applicationName), "-maintenance") {
+			return fmt.Errorf(`Forbidden application name "` + applicationName + `"`)
+		}
+	}
+	expr := `^[a-z]+([a-z0-9-]*[a-z0-9])?$`
 	matcher := regexp.MustCompile(expr)
 	if !matcher.MatchString(applicationName) {
 		return fmt.Errorf("Application name must match `%v`", expr)
@@ -172,6 +178,26 @@ func (this *Server) Apps_Destroy(conn net.Conn, applicationName string) error {
 		}
 
 		return Send(conn, Message{Log, "Application destroyed\n"})
+	})
+}
+
+func (this *Server) Apps_Clone(conn net.Conn, oldApplicationName, newApplicationName string) error {
+	var oldApp *Application
+	err := this.WithApplication(oldApplicationName, func(app *Application, cfg *Config) error {
+		oldApp = app
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	err = this.Apps_Create(conn, newApplicationName, oldApp.BuildPack)
+	if err != nil {
+		return err
+	}
+	return this.WithPersistentApplication(newApplicationName, func(newApp *Application, cfg *Config) error {
+		newApp.Environment = oldApp.Environment
+		newApp.Processes = oldApp.Processes
+		return nil
 	})
 }
 

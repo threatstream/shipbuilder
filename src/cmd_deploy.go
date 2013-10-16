@@ -115,9 +115,10 @@ func (this *Deployment) createContainer() error {
 		return this.err
 	}
 	// Clear out and remove all git files from the container; they are unnecessary from this point forward.
-	this.err = e.BashCmd(`find ` + this.Application.SrcDir() + ` -regex '^.*\.git\(ignore\|modules\|attributes\)?$' -exec rm -rf {} \; 2>/dev/null`)
-	if this.err != nil {
-		return err
+	// NB: If this command fails, don't abort anything, just log the error.
+	ignorableErr := e.BashCmd(`find ` + this.Application.SrcDir() + ` . -regex '^.*\.git\(ignore\|modules\|attributes\)?$' -exec rm -rf {} \; 1>/dev/null 2>/dev/null`)
+	if ignorableErr != nil {
+		fmt.Fprintf(dimLogger, ".git* cleanup failed: %v\n", ignorableErr)
 	}
 	return nil
 }
@@ -423,7 +424,7 @@ func (this *Deployment) syncNode(node *Node) error {
 }
 
 func (this *Deployment) startDyno(dynoGenerator *DynoGenerator, process string) (Dyno, error) {
-	dyno := dynoGenerator.next(process)
+	dyno := dynoGenerator.Next(process)
 
 	logger := NewLogger(this.Logger, "["+dyno.Host+"] ")
 	e := Executor{logger}
@@ -464,33 +465,19 @@ func writeDeployScripts() error {
 	return nil
 }
 
-// Deploy and launch the container to nodes.
-func (this *Deployment) deploy() error {
-	if len(this.Application.Processes) == 0 {
-		return fmt.Errorf("No processes scaled up, adjust with `ps:scale procType=#` before deploying")
-	}
-
-	titleLogger := NewFormatter(this.Logger, GREEN)
-	dimLogger := NewFormatter(this.Logger, DIM)
-
-	e := Executor{dimLogger}
-
-	this.autoDetectRevision()
-
-	err := writeDeployScripts()
-	if err != nil {
-		return err
-	}
-
+func (this *Deployment) calculateDynosToDestroy() ([]Dyno, bool, error) {
+	// Track whether or not new dynos will be allocated.  If no new allocations are necessary, no rsync'ing will be necessary.
+	allocatingNewDynos := false
 	// Build list of running dynos to be deactivated in the LB config upon successful deployment.
 	removeDynos := []Dyno{}
 	for process, numDynos := range this.Application.Processes {
 		runningDynos, err := this.Server.GetRunningDynos(this.Application.Name, process)
 		if err != nil {
-			return err
+			return removeDynos, allocatingNewDynos, err
 		}
 		if !this.ScalingOnly {
 			removeDynos = append(removeDynos, runningDynos...)
+			allocatingNewDynos = true
 		} else if numDynos < 0 {
 			// Scaling down this type of process.
 			if len(runningDynos) >= -1*numDynos {
@@ -499,15 +486,21 @@ func (this *Deployment) deploy() error {
 			} else {
 				removeDynos = append(removeDynos, runningDynos...)
 			}
+		} else {
+			allocatingNewDynos = true
 		}
 	}
+	fmt.Fprintf(this.Logger, "calculateDynosToDestroy :: calculated to remove the following dynos: %v\n", removeDynos)
+	return removeDynos, allocatingNewDynos, nil
+}
 
-	type SyncResult struct {
+func (this *Deployment) syncNodes() ([]*Node, error) {
+	type NodeSyncResult struct {
 		node *Node
 		err  error
 	}
 
-	syncStep := make(chan SyncResult)
+	syncStep := make(chan NodeSyncResult)
 	for _, node := range this.Config.Nodes {
 		go func(node *Node) {
 			c := make(chan error, 1)
@@ -517,7 +510,7 @@ func (this *Deployment) deploy() error {
 				c <- fmt.Errorf("Sync operation to node '%v' timed out after %v seconds", node.Host, NODE_SYNC_TIMEOUT_SECONDS)
 			}()
 			// Block until chan has something, at which point syncStep will be notified.
-			syncStep <- SyncResult{node, <-c}
+			syncStep <- NodeSyncResult{node, <-c}
 		}(node)
 	}
 
@@ -532,15 +525,18 @@ func (this *Deployment) deploy() error {
 	}
 
 	if len(availableNodes) == 0 {
-		return fmt.Errorf("No available nodes. This is probably very bad for all apps running on this deployment system.")
+		return availableNodes, fmt.Errorf("No available nodes. This is probably very bad for all apps running on this deployment system.")
 	}
+	return availableNodes, nil
+}
 
+func (this *Deployment) startDynos(availableNodes []*Node, titleLogger io.Writer) ([]Dyno, error) {
 	// Now we've successfully sync'd and we have a list of nodes available to deploy to.
 	addDynos := []Dyno{}
 
-	dynoGenerator, err := this.Server.newDynoGenerator(availableNodes, this.Application.Name, this.Version)
+	dynoGenerator, err := this.Server.NewDynoGenerator(availableNodes, this.Application.Name, this.Version)
 	if err != nil {
-		return err
+		return addDynos, err
 	}
 
 	type StartResult struct {
@@ -582,14 +578,52 @@ func (this *Deployment) deploy() error {
 					}
 				}
 			case <-timeout:
-				return fmt.Errorf("Start operation timed out after %v seconds", DEPLOY_TIMEOUT_SECONDS)
+				return addDynos, fmt.Errorf("Start operation timed out after %v seconds", DEPLOY_TIMEOUT_SECONDS)
 			}
 		}
 	}
+	return addDynos, nil
+}
 
-	err = this.Server.SyncLoadBalancers(e, addDynos, removeDynos)
+// Deploy and launch the container to nodes.
+func (this *Deployment) deploy() error {
+	if len(this.Application.Processes) == 0 {
+		return fmt.Errorf("No processes scaled up, adjust with `ps:scale procType=#` before deploying")
+	}
+
+	titleLogger := NewFormatter(this.Logger, GREEN)
+	dimLogger := NewFormatter(this.Logger, DIM)
+
+	e := Executor{dimLogger}
+
+	this.autoDetectRevision()
+
+	err := writeDeployScripts()
 	if err != nil {
 		return err
+	}
+
+	removeDynos, allocatingNewDynos, err := this.calculateDynosToDestroy()
+	if err != nil {
+		return err
+	}
+
+	if allocatingNewDynos {
+		availableNodes, err := this.syncNodes()
+		if err != nil {
+			return err
+		}
+
+		// Now we've successfully sync'd and we have a list of nodes available to deploy to.
+		addDynos, err := this.startDynos(availableNodes, titleLogger)
+		if err != nil {
+			return err
+		}
+
+		err = this.Server.SyncLoadBalancers(&e, addDynos, removeDynos)
+		if err != nil {
+			return err
+		}
 	}
 
 	if !this.ScalingOnly {
@@ -626,28 +660,53 @@ func (this *Deployment) deploy() error {
 	return nil
 }
 
-func (this *Deployment) postDeployHooks() {
-	if this.ScalingOnly {
-		return
+func (this *Deployment) postDeployHooks(err error) {
+	var message string
+	notify := "0"
+	color := "green"
+
+	revision := "."
+	if len(this.Revision) > 0 {
+		revision = " (" + this.Revision[0:7] + ")."
 	}
 
-	theUrl, ok := this.Application.Environment["DEPLOYHOOKS_HTTP_URL"]
-	if !ok {
-		return
-	}
-
-	durationFractionStripper, _ := regexp.Compile(`^(.*)\.[0-9]*(s)$`)
+	durationFractionStripper, _ := regexp.Compile(`^(.*)\.[0-9]*(s)?$`)
 	duration := durationFractionStripper.ReplaceAllString(time.Since(this.StartedTs).String(), "$1$2")
 
-	message := "Deployed " + this.Application.Name + " " + this.Version + " in " + duration + " (" + this.Revision[0:7] + ")."
-
-	if strings.Contains(theUrl, "https://api.hipchat.com/v1/rooms/message") {
-		theUrl += "&notify=0&from=ShipBuilder&message_format=text&message=" + url.QueryEscape(message)
-		fmt.Printf("info: dispatching app deployhook url, app=%v url=%v\n", this.Application.Name, theUrl)
-		go http.Get(theUrl)
-
+	hookUrl, ok := this.Application.Environment["DEPLOYHOOKS_HTTP_URL"]
+	if !ok {
+		fmt.Printf("app '%v' doesn't have a DEPLOYHOOKS_HTTP_URL\n", this.Application.Name)
+		return
+	} else if err != nil {
+		task := "Deployment"
+		if this.ScalingOnly {
+			task = "Scaling"
+		}
+		message = this.Application.Name + ": " + task + " operation failed after " + duration + ": " + err.Error() + revision
+		notify = "1"
+		color = "red"
+	} else if err == nil && this.ScalingOnly {
+		procInfo := ""
+		err := this.Server.WithApplication(this.Application.Name, func(app *Application, cfg *Config) error {
+			for proc, val := range app.Processes {
+				procInfo += " " + proc + "=" + strconv.Itoa(val)
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Printf("warn: postDeployHooks scaling caught: %v", err)
+		}
+		message = "Scaled " + this.Application.Name + " to" + procInfo + " in " + duration + revision
 	} else {
-		fmt.Printf("error: unrecognized app deployhook url, app=%v url=%v\n", this.Application.Name, theUrl)
+		message = "Deployed " + this.Application.Name + " " + this.Version + " in " + duration + revision
+	}
+
+	if strings.HasPrefix(hookUrl, "https://api.hipchat.com/v1/rooms/message") {
+		hookUrl += "&notify=" + notify + "&color=" + color + "&from=ShipBuilder&message_format=text&message=" + url.QueryEscape(message)
+		fmt.Printf("info: dispatching app deployhook url, app=%v url=%v\n", this.Application.Name, hookUrl)
+		go http.Get(hookUrl)
+	} else {
+		fmt.Printf("error: unrecognized app deployhook url, app=%v url=%v\n", this.Application.Name, hookUrl)
 	}
 }
 
@@ -676,6 +735,7 @@ func (this *Deployment) Deploy() error {
 		if err != nil {
 			this.undoVersionBump()
 		}
+		this.postDeployHooks(err)
 	}()
 
 	if !this.ScalingOnly {
@@ -700,7 +760,6 @@ func (this *Deployment) Deploy() error {
 		return err
 	}
 
-	this.postDeployHooks()
 	return nil
 }
 

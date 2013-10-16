@@ -55,11 +55,11 @@ func (this *NodeStatus) ParseStatus(input string, err error) {
 }
 
 func RemoteCommand(sshHost string, sshArgs ...string) (string, error) {
-	sshFrontArgs := append([]string{DEFAULT_NODE_USERNAME + "@" + sshHost}, defaultSshParametersList...)
-	sshCombinedArgs := append(sshFrontArgs, sshArgs...)
+	frontArgs := append([]string{"1m", "ssh", DEFAULT_NODE_USERNAME + "@" + sshHost}, defaultSshParametersList...)
+	combinedArgs := append(frontArgs, sshArgs...)
 
 	//fmt.Printf("debug: cmd is -> ssh %v <-\n", sshCombinedArgs)
-	bs, err := exec.Command("ssh", sshCombinedArgs...).CombinedOutput()
+	bs, err := exec.Command("timeout", combinedArgs...).CombinedOutput()
 
 	if err != nil {
 		return "", err
@@ -87,7 +87,7 @@ func checkServer(sshHost string, currentDeployMarker int, ch chan NodeStatus) {
 	select {
 	case result := <-done: // Captures completed status update.
 		ch <- result // Sends result to channel.
-	case <-time.After(15 * time.Second):
+	case <-time.After(30 * time.Second):
 		ch <- NodeStatus{
 			Host:         sshHost,
 			FreeMemoryMb: -1,
