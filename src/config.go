@@ -58,11 +58,17 @@ const (
 	LOAD_BALANCER_SYNC_TIMEOUT_SECONDS = 45
 	DEPLOY_TIMEOUT_SECONDS             = 240
 	STATUS_MONITOR_INTERVAL_SECONDS    = 15
-	DEFAULT_SSH_PARAMETERS             = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
+
+	DEFAULT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
+
+	// Timeout after the server fails to response to polling every N seconds X times.
+	// Total timeout = (alive interval * alive count max) seconds.
+	DEFAULT_PERSISTENT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=4"
 )
 
 var (
-	defaultSshParametersList = strings.Split(DEFAULT_SSH_PARAMETERS, " ")
+	defaultSshParametersList           = strings.Split(DEFAULT_SSH_PARAMETERS, " ")
+	defaultPersistentSshParametersList = strings.Split(DEFAULT_PERSISTENT_SSH_PARAMETERS, " ")
 )
 
 // LDFLAGS can be specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.

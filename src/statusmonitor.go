@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -152,4 +154,61 @@ func (this *Server) getNodeStatus(node *Node) NodeStatus {
 	status := <-request.resultChannel
 	//fmt.Printf("boom! %v\n", status)
 	return status
+}
+
+type (
+	DynoStateChangeListener interface {
+		GetAttachCommand() *exec.Cmd
+		//getChannel() chan string
+		//chan string
+	}
+
+	NodeDynoStateChangeListener struct {
+		host string
+		//ch   chan string
+	}
+
+	DynoStateChangeProcessor struct {
+		i int
+	}
+)
+
+func (this NodeDynoStateChangeListener) GetAttachCommand() *exec.Cmd {
+	sshArgs := append(defaultPersistentSshParametersList, DEFAULT_NODE_USERNAME+"@"+sshHost, "sudo", "lxc-monitor", ".*")
+	cmd := exec.Command("ssh", sshArgs...)
+	return cmd
+}
+
+func AttachDynoStateChangeListener(listener DynoStateChangeListener, out io.Writer) {
+	r, w := io.Pipe()
+
+	go func(reader io.Reader) {
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			fmt.Printf("HEY... so v=%v\n", scanner.Text())
+		}
+	}(r)
+
+	for {
+		cmd := listener.GetAttachCommand()
+		cmd.Stdout = w
+
+		err := cmd.Run()
+		if err != nil {
+			fmt.Fprintf(out, "NodeDynoStateChangeListener.Attach error running ssh listener: %v\n", err)
+			continue
+		}
+
+		// err = cmd.Wait()
+		// if err != nil {
+		// 	fmt.Printf("NodeDynoStateChangeListener.Attach error waiting for ssh listener to complete: %v\n", err)
+		// 	continue
+		// }
+	}
+
+	//if err != nil {
+	//	return "", err
+	//}
+
+	//return string(bs), nil
 }
