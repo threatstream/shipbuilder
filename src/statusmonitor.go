@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -156,6 +157,7 @@ func (this *Server) getNodeStatus(node *Node) NodeStatus {
 	return status
 }
 
+
 type (
 	DynoStateChangeListener interface {
 		GetAttachCommand() *exec.Cmd
@@ -168,10 +170,37 @@ type (
 		//ch   chan string
 	}
 
+	DynoState struct {
+		Dyno Dyno
+		State string
+	}
+
 	DynoStateChangeProcessor struct {
-		i int
+		ch      chan string
+		running bool
 	}
 )
+
+var (
+	// 'test-app_v1_web_10023' changed state to [STARTING]
+	dynoStateParserRe = regexp.MustCompile(`'([^']+) changed state to \[([^\]]+)\]'`)
+)
+
+
+
+func NewDynoState(host, message string) (*DynoState, error) {
+	parsed := dynoStateParserRe.FindStringSubmatch(strings.TrimSpace(message))
+	state := parsed[]
+	dyno, err := ContainerToDyno(host, container)
+	if err != nil {
+		return nil, err
+	}
+	dynoState := DynoState{
+		Dyno: dyno,
+		State: state,
+	}
+	return dynoState, nil
+}
 
 func (this NodeDynoStateChangeListener) GetAttachCommand() *exec.Cmd {
 	sshArgs := append(defaultPersistentSshParametersList, DEFAULT_NODE_USERNAME+"@"+sshHost, "sudo", "lxc-monitor", ".*")
@@ -179,13 +208,29 @@ func (this NodeDynoStateChangeListener) GetAttachCommand() *exec.Cmd {
 	return cmd
 }
 
-func AttachDynoStateChangeListener(listener DynoStateChangeListener, out io.Writer) {
+func (this *DynoStateChangeProcessor) Start() error {
+	if running {
+		return fmt.Errorf("DynoStateChangeProcessor is already running")
+	}
+	this.running = true
+	go func(ch chan string) {
+		for {
+			select {
+				case change
+			}
+		}
+	}(this.ch)
+	return nil
+}
+
+func AttachDynoStateChangeListener(listener DynoStateChangeListener, ch chan string) {
 	r, w := io.Pipe()
 
 	go func(reader io.Reader) {
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
-			fmt.Printf("HEY... so v=%v\n", scanner.Text())
+			text := scanner.Text()
+			fmt.Printf("HEY... so v=%v\n", text)
 		}
 	}(r)
 
@@ -195,7 +240,7 @@ func AttachDynoStateChangeListener(listener DynoStateChangeListener, out io.Writ
 
 		err := cmd.Run()
 		if err != nil {
-			fmt.Fprintf(out, "NodeDynoStateChangeListener.Attach error running ssh listener: %v\n", err)
+			fmt.Printf("NodeDynoStateChangeListener.Attach error running ssh listener: %v\n", err)
 			continue
 		}
 

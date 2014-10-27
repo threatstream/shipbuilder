@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -16,10 +15,10 @@ func (this TestDynoStateChangeListener) GetAttachCommand() *exec.Cmd {
 	cmd := exec.Command(
 		"bash",
 		"-c",
-		`echo "'test' changed state to [STARTING]" ; sleep 1 ;
-echo "'test' changed state to [RUNNING]" ; sleep 1 ;
-echo "'test' changed state to [STOPPING]" ; sleep 1 ;
-echo "'test' changed state to [STOPPED]" ; sleep 1 ; `,
+		`echo "'test-app_v1_web_10023' changed state to [STARTING]" ; sleep 1 ;
+echo "'test-app_v1_web_10023' changed state to [RUNNING]" ; sleep 1 ;
+echo "'test-app_v1_web_10023' changed state to [STOPPING]" ; sleep 1 ;
+echo "'test-app_v1_web_10023' changed state to [STOPPED]" ; sleep 1 ; `,
 	)
 	return cmd
 }
@@ -29,17 +28,38 @@ echo "'test' changed state to [STOPPED]" ; sleep 1 ; `,
 //}
 
 func Test_StatusMonitor(t *testing.T) {
-	t.Log("hello")
-
-	input := `'test' changed state to [STARTING]
-'test' changed state to [RUNNING]
-'test' changed state to [STOPPING]
-'test' changed state to [STOPPED]
-`
-	t.Logf("input=%v\n", input)
-
 	//listener := NodeDynoStateChangeListener{"testlab-sb.threatstream.com"}
 	listener := TestDynoStateChangeListener{}
-	go AttachDynoStateChangeListener(listener, os.Stdout)
+	ch := make(chan string)
+	go AttachDynoStateChangeListener(listener, ch)
 	time.Sleep(10000000000)
+}
+
+func Test_NewDynoState(t *testing.T) {
+	type DynoStateTest struct {
+		Input          string
+		ExpectedResult DynoState
+		ExpectedError  error
+	}
+
+	tests := []DynoStateTest{
+		DynoStateTest{
+			Input: `'test-app_v1_web_10023' changed state to [STARTING]`,
+			ExpectedResult: DynoState{
+				Dyno:  ContainerToDyno("test-app_v1_web_10023"),
+				State: "STARTING",
+			},
+			ExpectedError: nil,
+		},
+	}
+
+	inputs := []string{
+		`'test-app_v1_web_10023' changed state to [STARTING]`,
+	}
+	for _, input := range inputs {
+		_, err := NewDynoState(input)
+		if err != nil {
+			t.Errorf(`got unexpcted error with input "%v"`, input)
+		}
+	}
 }
