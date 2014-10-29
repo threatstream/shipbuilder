@@ -63,7 +63,7 @@ const (
 
 	// Timeout after the server fails to response to polling every N seconds X times.
 	// Total timeout = (alive interval * alive count max) seconds.
-	DEFAULT_PERSISTENT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=4"
+	DEFAULT_PERSISTENT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
 )
 
 var (

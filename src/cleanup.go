@@ -10,10 +10,7 @@ import (
 func (this *Server) numDynosAtVersion(applicationName, version string, hostStatusMap *map[string]NodeStatus) (int, error) {
 	numFound := 0
 	for _, nodeStatus := range *hostStatusMap {
-		dynos, err := NodeStatusToDynos(&nodeStatus)
-		if err != nil {
-			return numFound, err
-		}
+		dynos := NodeStatusToDynos(&nodeStatus)
 		for _, dyno := range dynos {
 			if dyno.Application == applicationName && dyno.Version == version {
 				numFound += 1
@@ -53,10 +50,7 @@ func (this *Server) pruneDynos(nodeStatus NodeStatus, hostStatusMap *map[string]
 
 	e := &Executor{logger}
 
-	dynos, err := NodeStatusToDynos(&nodeStatus)
-	if err != nil {
-		return err
-	}
+	dynos := NodeStatusToDynos(&nodeStatus)
 
 	// Cleanup running dynos which don't meet our criteria.
 	for _, dyno := range dynos {

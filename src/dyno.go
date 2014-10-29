@@ -31,6 +31,11 @@ type (
 		allocations map[string][]int
 		lock        sync.Mutex
 	}
+
+	SystemDynoState struct {
+		Mapping map[string]map[string]Dyno
+		lock    sync.Mutex
+	}
 )
 
 const (
@@ -87,6 +92,40 @@ func (this *Dyno) GetServiceStatus(e *Executor) error {
 	return this.AttachAndExecute(e, "service", "app", "status")
 }
 
+func NewSystemDynoState() *SystemDynoState {
+	return &SystemDynoState{
+		Mapping: map[string]map[string]Dyno{},
+		lock:    sync.Mutex{},
+	}
+}
+
+func (this *SystemDynoState) ProcessUpdate(host, container, state string) error {
+	this.lock.Lock()
+	defer this.lock.Unlock()
+	hostMap, ok := this.Mapping[host]
+	if !ok {
+		hostMap = map[string]Dyno{}
+		this.Mapping[host] = hostMap
+	}
+	if state == DYNO_STATE_STOPPED {
+		// Remove it.
+		delete(hostMap, container)
+	} else {
+		// Determine if dyno is already known.
+		dyno, ok := hostMap[container]
+		if ok {
+			dyno.State = state
+		} else {
+			dyno := ContainerToDyno(host, container, state)
+			hostMap[container] = *dyno
+		}
+	}
+	fmt.Printf("map=%v/%v\n", hostMap[container], len(hostMap))
+	fmt.Printf("map=%v\n", hostMap[container])
+	//nodeState, _ := nodeDynoState[host]
+	return nil
+}
+
 // Check if a port is already in use.
 func (this *DynoPortTracker) AlreadyInUse(host string, port int) bool {
 	this.lock.Lock()
@@ -141,46 +180,58 @@ func (this *DynoPortTracker) Release(host string, port int) {
 	}
 }
 
-// NB: Container name format is: appName_version_process_port
-func ContainerToDyno(host string, container string) (Dyno, error) {
+// Do our best to parse a container string into a dyno.  This is very, ahem, "forgiving".
+// NB: Container name format is: appName_version_process_port[_state?]
+// NB: State is only overridden by the container string when an empty state string is passed in initially.
+func ContainerToDyno(host string, container, state string) *Dyno {
+	version := "0"
+	var versionNumber int
+	process := ""
+	port := "0"
+	var portNumber int
 	tokens := strings.Split(container, DYNO_DELIMITER)
-	if len(tokens) != 5 {
-		return Dyno{}, fmt.Errorf("Failed to parse container string '%v' into 5 tokens", container)
+	application := tokens[0]
+	if len(tokens) >= 2 {
+		version = tokens[1]
 	}
-	if !strings.HasPrefix(tokens[1], "v") {
-		return Dyno{}, fmt.Errorf("Invalid dyno version value '%v', must begin with a 'v'", tokens[1])
+	if len(tokens) >= 3 {
+		process = tokens[2]
 	}
-	versionNumber, err := strconv.Atoi(strings.TrimPrefix(tokens[1], "v"))
+	if len(tokens) >= 4 {
+		port = tokens[3]
+	}
+	// State is only overridden by the container string when an empty state string is passed in initially.
+	if len(tokens) >= 5 && state == "" {
+		state = tokens[4]
+	}
+	versionNumber, err := strconv.Atoi(strings.TrimPrefix(version, "v"))
 	if err != nil {
-		return Dyno{}, err
+		versionNumber = 0
 	}
-	portNumber, err := strconv.Atoi(tokens[3])
+	portNumber, err = strconv.Atoi(port)
 	if err != nil {
-		return Dyno{}, err
+		portNumber = 0
 	}
-	return Dyno{
+	return &Dyno{
 		Host:          host,
-		Container:     tokens[0] + DYNO_DELIMITER + tokens[1] + DYNO_DELIMITER + tokens[2] + DYNO_DELIMITER + tokens[3],
-		Application:   tokens[0],
-		Version:       tokens[1],
-		Process:       tokens[2],
-		Port:          tokens[3],
-		State:         strings.ToLower(tokens[4]),
+		Container:     container,
+		Application:   application,
+		Version:       version,
+		Process:       process,
+		Port:          port,
+		State:         state,
 		VersionNumber: versionNumber,
 		PortNumber:    portNumber,
-	}, nil
+	}
 }
 
-func NodeStatusToDynos(nodeStatus *NodeStatus) ([]Dyno, error) {
+func NodeStatusToDynos(nodeStatus *NodeStatus) []Dyno {
 	dynos := make([]Dyno, len(nodeStatus.Containers))
 	for i, container := range nodeStatus.Containers {
-		dyno, err := ContainerToDyno(nodeStatus.Host, container)
-		if err != nil {
-			return dynos, err
-		}
-		dynos[i] = dyno
+		dyno := ContainerToDyno(nodeStatus.Host, container, "")
+		dynos[i] = *dyno
 	}
-	return dynos, nil
+	return dynos
 }
 
 func (this *Server) GetRunningDynos(application, processType string) ([]Dyno, error) {
@@ -198,11 +249,9 @@ func (this *Server) GetRunningDynos(application, processType string) ([]Dyno, er
 			continue
 		}
 		for _, container := range status.Containers {
-			dyno, err := ContainerToDyno(node.Host, container)
-			if err != nil {
-				fmt.Printf("error: Container->Dyno parse failed: %v\n", err)
-			} else if dyno.State == DYNO_STATE_RUNNING && dyno.Application == application && dyno.Process == processType {
-				dynos = append(dynos, dyno)
+			dyno := ContainerToDyno(node.Host, container, "")
+			if dyno.State == DYNO_STATE_RUNNING && dyno.Application == application && dyno.Process == processType {
+				dynos = append(dynos, *dyno)
 			}
 		}
 	}
@@ -218,7 +267,7 @@ func (this *Server) NewDynoGenerator(nodes []*Node, application string, version 
 		nodeStatus := this.getNodeStatus(node)
 		// Determine if there is an identical app/version container already running on the node.
 		for _, container := range nodeStatus.Containers {
-			dyno, _ := ContainerToDyno(node.Host, container)
+			dyno := ContainerToDyno(node.Host, container, "")
 			if dyno.State == DYNO_STATE_RUNNING && dyno.Application == application && dyno.Version == version {
 				running = true
 				break
@@ -248,8 +297,8 @@ func (this *DynoGenerator) Next(process string) Dyno {
 	nodeStatus := this.statuses[this.position%len(this.statuses)].status
 	this.position++
 	port := fmt.Sprint(this.server.getNextPort(&nodeStatus, &this.usedPorts))
-	dyno, _ := ContainerToDyno(nodeStatus.Host, this.application+DYNO_DELIMITER+this.version+DYNO_DELIMITER+process+DYNO_DELIMITER+port+DYNO_DELIMITER+DYNO_STATE_STOPPED)
-	return dyno
+	dyno := ContainerToDyno(nodeStatus.Host, this.application+DYNO_DELIMITER+this.version+DYNO_DELIMITER+process+DYNO_DELIMITER+port, DYNO_STATE_STOPPED)
+	return *dyno
 }
 
 // NodeStatus sorting.
@@ -282,11 +331,7 @@ func AppendIfMissing(slice []int, i int) []int {
 func (this *Server) getNextPort(nodeStatus *NodeStatus, usedPorts *[]int) int {
 	port := 10000
 	for _, container := range nodeStatus.Containers {
-		dyno, err := ContainerToDyno(nodeStatus.Host, container)
-		if err != nil {
-			fmt.Printf("warning: Server.getNextPort :: Failed to create Dyno from container '%v': %v\n", container, err)
-			continue
-		}
+		dyno := ContainerToDyno(nodeStatus.Host, container, "")
 		if dyno.State == DYNO_STATE_RUNNING && dyno.PortNumber > 0 {
 			*usedPorts = AppendIfMissing(*usedPorts, dyno.PortNumber)
 		}

@@ -1,14 +1,16 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
+	//"io"
+	//"log"
 	"os/exec"
-	"strconv"
 	"regexp"
-	"strings"
+	//"strconv"
+	//"strings"
 	"time"
+
+	"github.com/jaytaylor/streamon"
 )
 
 type (
@@ -28,14 +30,18 @@ type (
 )
 
 const (
+	LXC_STATE_MONITOR_COMMAND = `test $(pgrep --exact lxc-ls | wc -l) -eq 0 && ( sudo lxc-ls --fancy | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/" && sudo lxc-monitor '.*' ) || exit 1`
+
 	STATUS_MONITOR_CHECK_COMMAND = `echo $(free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$') $(sudo lxc-ls --fancy | sed 's/[ \t]\{1,\}/ /g' | grep '^[^_]\+_v[0-9]\+_[^_]\+_[^_]\+ [^ ]\+' | cut -d' ' -f1,2 | tr ' ' '_' | tr '\n' ' ')`
 )
 
 var (
 	nodeStatusRequestChannel = make(chan NodeStatusRequest)
+
+	dynoStateParserRe = regexp.MustCompile(`'([^']+) changed state to \[([^\]]+)\]'`)
 )
 
-func (this *NodeStatus) ParseStatus(input string, err error) {
+/*func (this *NodeStatus) ParseStatus(input string, err error) {
 	if err != nil {
 		this.Err = err
 		return
@@ -55,7 +61,7 @@ func (this *NodeStatus) ParseStatus(input string, err error) {
 
 	this.Containers = tokens[1:]
 	this.Ts = time.Now()
-}
+}*/
 
 func RemoteCommand(sshHost string, sshArgs ...string) (string, error) {
 	frontArgs := append([]string{"1m", "ssh", DEFAULT_NODE_USERNAME + "@" + sshHost}, defaultSshParametersList...)
@@ -71,7 +77,7 @@ func RemoteCommand(sshHost string, sshArgs ...string) (string, error) {
 	return string(bs), nil
 }
 
-func checkServer(sshHost string, currentDeployMarker int, ch chan NodeStatus) {
+/*func checkServer(sshHost string, currentDeployMarker int, ch chan NodeStatus) {
 	// Shell command which combines free MB with list of running containers.
 	done := make(chan NodeStatus)
 
@@ -99,18 +105,19 @@ func checkServer(sshHost string, currentDeployMarker int, ch chan NodeStatus) {
 			Err:          fmt.Errorf("Timed out for host %v", sshHost),
 		} // Sends timeout result to channel.
 	}
-}
+}*/
 
 func (this *Server) checkNodes(resultChan chan NodeStatus) error {
-	cfg, err := this.getConfig(true)
-	if err != nil {
-		return err
-	}
-	currentDeployMarker := deployLock.value()
+	// TODO: RESTORE
+	// cfg, err := this.getConfig(true)
+	// if err != nil {
+	// 	return err
+	// }
+	// currentDeployMarker := deployLock.value()
 
-	for _, node := range cfg.Nodes {
-		go checkServer(node.Host, currentDeployMarker, resultChan)
-	}
+	// for _, node := range cfg.Nodes {
+	// 	go checkServer(node.Host, currentDeployMarker, resultChan)
+	// }
 	return nil
 }
 
@@ -157,8 +164,41 @@ func (this *Server) getNodeStatus(node *Node) NodeStatus {
 	return status
 }
 
+func (this *Server) processDynoStateUpdate(nodeHost, container, state string) {
+	/*if _, ok := nodeDynoState[nodeHost]; !ok {
+		nodeDynoState[nodeHost] = map[string]string
+	}
+	nodeState, _ := nodeDynoState[nodeHost]*/
+}
 
-type (
+// Continually loops the monitoring upon interruption until the a quit channel message is received.
+func (this *Server) monitorNodeContainers(nodeHost string, quit chan bool) {
+	frontArgs := append([]string{"ssh", DEFAULT_NODE_USERNAME + "@" + nodeHost}, defaultPersistentSshParametersList...)
+	commandArgs := append(frontArgs, LXC_STATE_MONITOR_COMMAND)
+
+	for {
+		commandListener, err := streamon.NewCommandListener(commandArgs, dynoStateParserRe)
+		if err != nil {
+			panic(err)
+		}
+		ch := make(chan []string)
+		commandListener.Attach(ch)
+		for ch != nil {
+			select {
+			case match, ok := <-ch:
+				if !ok {
+					ch = nil
+				}
+				this.processDynoStateUpdate(nodeHost, match[1], match[2])
+
+			case <-quit:
+				return
+			}
+		}
+	}
+}
+
+/*type (
 	DynoStateChangeListener interface {
 		GetAttachCommand() *exec.Cmd
 		//getChannel() chan string
@@ -181,13 +221,6 @@ type (
 	}
 )
 
-var (
-	// 'test-app_v1_web_10023' changed state to [STARTING]
-	dynoStateParserRe = regexp.MustCompile(`'([^']+) changed state to \[([^\]]+)\]'`)
-)
-
-
-
 func NewDynoState(host, message string) (*DynoState, error) {
 	parsed := dynoStateParserRe.FindStringSubmatch(strings.TrimSpace(message))
 	state := parsed[]
@@ -206,54 +239,4 @@ func (this NodeDynoStateChangeListener) GetAttachCommand() *exec.Cmd {
 	sshArgs := append(defaultPersistentSshParametersList, DEFAULT_NODE_USERNAME+"@"+sshHost, "sudo", "lxc-monitor", ".*")
 	cmd := exec.Command("ssh", sshArgs...)
 	return cmd
-}
-
-func (this *DynoStateChangeProcessor) Start() error {
-	if running {
-		return fmt.Errorf("DynoStateChangeProcessor is already running")
-	}
-	this.running = true
-	go func(ch chan string) {
-		for {
-			select {
-				case change
-			}
-		}
-	}(this.ch)
-	return nil
-}
-
-func AttachDynoStateChangeListener(listener DynoStateChangeListener, ch chan string) {
-	r, w := io.Pipe()
-
-	go func(reader io.Reader) {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			text := scanner.Text()
-			fmt.Printf("HEY... so v=%v\n", text)
-		}
-	}(r)
-
-	for {
-		cmd := listener.GetAttachCommand()
-		cmd.Stdout = w
-
-		err := cmd.Run()
-		if err != nil {
-			fmt.Printf("NodeDynoStateChangeListener.Attach error running ssh listener: %v\n", err)
-			continue
-		}
-
-		// err = cmd.Wait()
-		// if err != nil {
-		// 	fmt.Printf("NodeDynoStateChangeListener.Attach error waiting for ssh listener to complete: %v\n", err)
-		// 	continue
-		// }
-	}
-
-	//if err != nil {
-	//	return "", err
-	//}
-
-	//return string(bs), nil
-}
+}*/
