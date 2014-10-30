@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 
-# Don't `cd` because it can break the path-to-ssl-cert parameter.
-#cd "$(dirname "$0")"
+# Preserve start path to be able to appropriately reference relative ssl-cert paths.
+startPath="$(pwd)"
+## Don't `cd` because it can break the path-to-ssl-cert parameter.
+cd "$(dirname "$0")"
+basePath="$(pwd)"
 
-source libfns.sh
+source 'libfns.sh'
+#source "$(dirname "$0")/libfns.sh"
 
 while getopts "H:S:c:h" OPTION; do
     case $OPTION in
@@ -46,8 +50,10 @@ if test -z "${action}"; then
     action='install'
 fi
 
+cd "${startPath}"
 test -n "${certFile}" && test ! -r "${certFile}" && echo "error: unable to read ssl certificate file; verify that it exists and user has permission to read it: ${certFile}" 1>&2 && exit 1
 test -z "${certFile}" && echo "warn: no ssl certificate file specified, ssl support will not be available (specify with '-c [path-to-ssl-cert]'" 1>&2
+cd "${basePath}"
     
 
 verifySshAndSudoForHosts "${sbHost} ${lbHost}"
@@ -56,11 +62,12 @@ verifySshAndSudoForHosts "${sbHost} ${lbHost}"
 if [ "${action}" = "install" ]; then
     installAccessForSshHost $lbHost
     
+    cd "${startPath}"
     rsync -azve "ssh -o 'BatchMode=yes' -o 'StrictHostKeyChecking=no'" libfns.sh "${certFile}" $lbHost:/tmp/
     ssh -o 'BatchMode=yes' -o 'StrictHostKeyChecking=no' $lbHost "source /tmp/libfns.sh && prepareLoadBalancer $(basename "${certFile}")"
+    cd "${basePath}"
 
 else
 	echo 'unrecognized action: ${action}' 1>&2 && exit 1
 fi
-
 

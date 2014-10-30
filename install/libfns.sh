@@ -445,8 +445,12 @@ function prepareLoadBalancer() {
     echo "info: installing required packages: ${required}"
     sudo apt-get update
     abortIfNonZero $? "updating apt"
-    sudo apt-get install -y ${required}
-    abortIfNonZero $? "apt-get install ${required}"
+    # NB: Special options to keep old configuration files; this is to prevent
+    # overwriting our rsyslog haproxy conf when installing LB to same machine as
+    # the SB server.
+    export DEBIAN_FRONTEND=noninteractive
+    sudo apt-get install -o Dpkg::Options::="--force-confold" --force-yes -y ${required}
+    abortIfNonZero $? "apt-get install -o Dpkg::Options::="--force-confold" --force-yes -y ${required}"
 
     optional="vim-haproxy"
     echo "info: installing optional packages: ${optional}"
