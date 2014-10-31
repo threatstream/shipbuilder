@@ -28,7 +28,7 @@ func (this *Server) LoadBalancer_Add(conn net.Conn, addresses []string) error {
 		return err
 	}
 	e := &Executor{NewLogger(NewMessageLogger(conn), "[lb:add] ")}
-	return this.SyncLoadBalancers(e, []Dyno{}, []Dyno{})
+	return this.SyncLoadBalancers(e, []*Dyno{}, []*Dyno{})
 }
 
 func (this *Server) LoadBalancer_List(conn net.Conn) error {
@@ -53,5 +53,5 @@ func (this *Server) LoadBalancer_Remove(conn net.Conn, addresses []string) error
 		return err
 	}
 	e := &Executor{NewLogger(NewMessageLogger(conn), "[lb:remove] ")}
-	return this.SyncLoadBalancers(e, []Dyno{}, []Dyno{})
+	return this.SyncLoadBalancers(e, []*Dyno{}, []*Dyno{})
 }

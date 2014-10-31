@@ -154,14 +154,14 @@ func (this *Server) Node_List(conn net.Conn) error {
 
 	return this.WithConfig(func(cfg *Config) error {
 		for _, node := range cfg.Nodes {
-			nodeStatus := this.getNodeStatus(node)
-			if nodeStatus.Err == nil {
+			nodeStatus := this.SystemDynoState.GetHostState(node.Host)
+			if nodeStatus.Error == nil {
 				fmt.Fprintf(dimLogger, "%v (%vMB free)\n", node.Host, nodeStatus.FreeMemoryMb)
-				for _, application := range nodeStatus.Containers {
-					fmt.Fprintf(dimLogger, "    `- %v\n", application)
+				for _, dyno := range nodeStatus.Dynos {
+					fmt.Fprintf(dimLogger, "    `- %v\n", dyno.Info())
 				}
 			} else {
-				fmt.Fprintf(dimLogger, "%v (unknown status: %v since %v)\n", node.Host, nodeStatus.Err, nodeStatus.Ts)
+				fmt.Fprintf(dimLogger, "%v (unknown status: %v since %v)\n", node.Host, nodeStatus.Error, nodeStatus.Ts)
 			}
 
 		}

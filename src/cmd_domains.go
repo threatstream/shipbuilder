@@ -46,7 +46,7 @@ func (this *Server) Domains_Add(conn net.Conn, applicationName string, domains [
 		return err
 	}
 	e := &Executor{dimLogger}
-	return this.SyncLoadBalancers(e, []Dyno{}, []Dyno{})
+	return this.SyncLoadBalancers(e, []*Dyno{}, []*Dyno{})
 }
 
 func (this *Server) Domains_List(conn net.Conn, applicationName string) error {
@@ -88,5 +88,5 @@ func (this *Server) Domains_Remove(conn net.Conn, applicationName string, domain
 		return err
 	}
 	e := &Executor{dimLogger}
-	return this.SyncLoadBalancers(e, []Dyno{}, []Dyno{})
+	return this.SyncLoadBalancers(e, []*Dyno{}, []*Dyno{})
 }

@@ -18,6 +18,7 @@ import (
 type (
 	Server struct {
 		LogServer                 *server.Server
+		SystemDynoState           *SystemDynoState
 		currentLoadBalancerConfig string
 	}
 )
@@ -33,6 +34,13 @@ func run(name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func NewServer() *Server {
+	return &Server{
+		LogServer:       &server.Server{},
+		SystemDynoState: NewSystemDynoState(),
+	}
 }
 
 func (this *Server) getSimpleLogger(conn net.Conn) io.Writer {

@@ -11,12 +11,12 @@ import (
 const (
 	PRE_RECEIVE = `#!/bin/bash
 while read oldrev newrev refname; do
-  ` + EXE + ` pre-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
+    ` + EXE + ` pre-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
 done`
 
 	POST_RECEIVE = `#!/bin/bash
 while read oldrev newrev refname; do
-  ` + EXE + ` post-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
+    ` + EXE + ` post-receive ` + "`pwd`" + ` $oldrev $newrev $refname || exit 1
 done`
 
 	LOGIN_SHELL = `#!/usr/bin/env bash
@@ -509,8 +509,8 @@ defaults
     option redispatch
     maxconn 32000
     timeout connect 5000
-    timeout client 30000
-    timeout server 30000
+    timeout client 60000
+    timeout server 60000
     #option http-server-close
 
 frontend frontend

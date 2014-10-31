@@ -43,21 +43,26 @@ type (
 )
 
 const (
-	APP_DIR                            = "/app"
-	ENV_DIR                            = APP_DIR + "/env"
-	LXC_DIR                            = "/var/lib/lxc"
-	DIRECTORY                          = "/mnt/build"
-	BINARY                             = "shipbuilder"
-	EXE                                = DIRECTORY + "/" + BINARY
-	CONFIG                             = DIRECTORY + "/config.json"
-	GIT_DIRECTORY                      = "/git"
-	DEFAULT_NODE_USERNAME              = "ubuntu"
-	VERSION                            = "0.1.4"
-	NODE_SYNC_TIMEOUT_SECONDS          = 180
-	DYNO_START_TIMEOUT_SECONDS         = 120
-	LOAD_BALANCER_SYNC_TIMEOUT_SECONDS = 45
-	DEPLOY_TIMEOUT_SECONDS             = 240
-	STATUS_MONITOR_INTERVAL_SECONDS    = 15
+	APP_DIR               = "/app"
+	ENV_DIR               = APP_DIR + "/env"
+	LXC_DIR               = "/var/lib/lxc"
+	DIRECTORY             = "/mnt/build"
+	BINARY                = "shipbuilder"
+	EXE                   = DIRECTORY + "/" + BINARY
+	CONFIG                = DIRECTORY + "/config.json"
+	GIT_DIRECTORY         = "/git"
+	DEFAULT_NODE_USERNAME = "ubuntu"
+	VERSION               = "0.2.0"
+
+	DEPLOY_TIMEOUT_SECONDS              = 240
+	DYNO_PORT_ALLOCATION_EXPIRY_SECONDS = 600
+	DYNO_START_TIMEOUT_SECONDS          = 120
+	LOAD_BALANCER_SYNC_TIMEOUT_SECONDS  = 45
+	NODE_SYNC_TIMEOUT_SECONDS           = 180
+	STATUS_MONITOR_INTERVAL_SECONDS     = 15
+
+	DYNO_PORT_ALLOCATION_START = 10000
+	DYNO_PORT_ALLOCATION_END   = 12000
 
 	DEFAULT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30" // NB: Notice 30s connect timeout.
 
@@ -71,7 +76,7 @@ var (
 	defaultPersistentSshParametersList = strings.Split(DEFAULT_PERSISTENT_SSH_PARAMETERS, " ")
 )
 
-// LDFLAGS can be specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.
+// LDFLAGS are specified by compiling with `-ldflags '-X main.defaultSshHost=.. ...'`.
 var (
 	build                     string
 	defaultHaProxyStats       bool
@@ -86,7 +91,7 @@ var (
 	defaultZfsPool            string
 )
 
-// Global configuration.
+// Global configuration to be overridden by ldflags.
 var (
 	sshHost      = OverridableByEnv("SB_SSH_HOST", defaultSshHost)
 	sshKey       = OverridableByEnv("SB_SSH_KEY", defaultSshKey)
@@ -374,7 +379,7 @@ func (this *Server) ResolveLogServerIpAndPort() (string, error) {
 	return ip + ":" + port, nil
 }
 
-func (this *Server) SyncLoadBalancers(e *Executor, addDynos []Dyno, removeDynos []Dyno) error {
+func (this *Server) SyncLoadBalancers(e *Executor, addDynos []*Dyno, removeDynos []*Dyno) error {
 	syncLoadBalancerLock.Lock()
 	defer syncLoadBalancerLock.Unlock()
 
@@ -431,10 +436,7 @@ func (this *Server) SyncLoadBalancers(e *Executor, addDynos []Dyno, removeDynos 
 		for proc, _ := range app.Processes {
 			if proc == "web" {
 				// Find and don't add `removeDynos`.
-				runningDynos, err := this.GetRunningDynos(app.Name, proc)
-				if err != nil {
-					return err
-				}
+				runningDynos := this.SystemDynoState.GetRunningDynos(app.Name, proc)
 				for _, dyno := range runningDynos {
 					found := false
 					for _, remove := range removeDynos {
@@ -588,6 +590,16 @@ func (this *Server) GetActiveLoadBalancerConfig() (string, error) {
 		defer syncLoadBalancerLock.Unlock()
 	}
 	return this.currentLoadBalancerConfig, nil
+}
+
+// SSH command generator helper function.
+func SshCommand(host string) []string {
+	return append([]string{"ssh", DEFAULT_NODE_USERNAME + "@" + host}, defaultSshParametersList...)
+}
+
+// Persistent SSH command generator helper function.
+func PersistentSshCommand(host string) []string {
+	return append([]string{"ssh", DEFAULT_NODE_USERNAME + "@" + host}, defaultPersistentSshParametersList...)
 }
 
 func PathExists(path string) (bool, error) {

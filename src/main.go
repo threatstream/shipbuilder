@@ -13,7 +13,8 @@ func main() {
 	}
 	switch args[1] {
 	case "server":
-		log.Println(new(Server).start())
+		sbServer := NewServer()
+		log.Println(sbServer.start())
 	default:
 		new(Client).Do(args)
 	}

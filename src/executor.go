@@ -20,7 +20,7 @@ func (this *Executor) Run(name string, args ...string) error {
 		// Automatically inject ssh parameters.
 		args = append(defaultSshParametersList, args...)
 	}
-	io.WriteString(this.logger, "$ "+name+" "+strings.Join(args, " ")+"\n")
+	io.WriteString(this.logger, fmt.Sprintf("$ %v %v\n", name, strings.Join(args, " ")))
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = this.logger
 	cmd.Stderr = this.logger

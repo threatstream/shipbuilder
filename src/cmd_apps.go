@@ -219,13 +219,9 @@ func (this *Server) Apps_Health(conn net.Conn) error {
 	return this.WithConfig(func(cfg *Config) error {
 		for _, app := range cfg.Applications {
 			for process, numDynos := range app.Processes {
-				dynos, err := this.GetRunningDynos(app.Name, process)
+				dynos := this.SystemDynoState.GetRunningDynos(app.Name, process)
 				status := "passed"
 				message := ""
-				if err != nil {
-					status = "error"
-					message = fmt.Sprintf(" error=%v", err)
-				}
 				if numDynos != 0 && len(dynos) != numDynos {
 					if len(dynos) > numDynos {
 						message = fmt.Sprintf(" detail=%v_too_many_dynos", len(dynos)-numDynos)

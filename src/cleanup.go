@@ -10,8 +10,7 @@ import (
 func (this *Server) numDynosAtVersion(applicationName, version string, hostStatusMap *map[string]NodeStatus) (int, error) {
 	numFound := 0
 	for _, nodeStatus := range *hostStatusMap {
-		dynos := NodeStatusToDynos(&nodeStatus)
-		for _, dyno := range dynos {
+		for _, dyno := range nodeStatus.Dynos {
 			if dyno.Application == applicationName && dyno.Version == version {
 				numFound += 1
 			}
@@ -50,10 +49,8 @@ func (this *Server) pruneDynos(nodeStatus NodeStatus, hostStatusMap *map[string]
 
 	e := &Executor{logger}
 
-	dynos := NodeStatusToDynos(&nodeStatus)
-
 	// Cleanup running dynos which don't meet our criteria.
-	for _, dyno := range dynos {
+	for _, dyno := range nodeStatus.Dynos {
 		destroy := false
 
 		if dyno.State == DYNO_STATE_STOPPED {
@@ -101,7 +98,7 @@ func (this *Server) pruneDynos(nodeStatus NodeStatus, hostStatusMap *map[string]
 				}
 
 				if destroy {
-					dynoInUseByLoadBalancer, err := this.dynoRoutingActive(&dyno)
+					dynoInUseByLoadBalancer, err := this.dynoRoutingActive(dyno)
 					if err != nil {
 						return err
 					}
@@ -117,7 +114,7 @@ func (this *Server) pruneDynos(nodeStatus NodeStatus, hostStatusMap *map[string]
 			// TODO: Add LB config check to ensure that dyno.Node + "-" + dyno.Port does not appear anywhere in the haproxy config.
 			//"ssh", DEFAULT_NODE_USERNAME + "@" dyno.Host,
 			fmt.Fprintf(logger, "Cleaning up trash name=%v version=%v\n", dyno.Application, dyno.Version)
-			go func(dyno Dyno) {
+			go func(dyno *Dyno) {
 				dyno.Shutdown(e)
 			}(dyno)
 		}

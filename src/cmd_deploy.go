@@ -297,7 +297,8 @@ func (this *Deployment) build() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(titleLogger, "Waiting for container pre-hook\n")
+	fmt.Fprintf(titleLogger, "Fetching/updating app dependencies\n")
+	fmt.Fprintf(dimLogger, "Waiting for container pre-hook..\n")
 	select {
 	case err = <-c:
 	case <-time.After(30 * time.Minute):
@@ -307,6 +308,7 @@ func (this *Deployment) build() error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(titleLogger, "Application dependencies successfully fetched/updated\n")
 
 	err = this.prepareShellEnvironment(e)
 	if err != nil {
@@ -467,7 +469,7 @@ func (this *Deployment) syncNode(node *Node) error {
 	return nil
 }
 
-func (this *Deployment) startDyno(dynoGenerator *DynoGenerator, process string) (Dyno, error) {
+func (this *Deployment) startDyno(dynoGenerator *DynoGenerator, process string) (*Dyno, error) {
 	dyno := dynoGenerator.Next(process)
 
 	logger := NewLogger(this.Logger, "["+dyno.Host+"] ")
@@ -476,7 +478,7 @@ func (this *Deployment) startDyno(dynoGenerator *DynoGenerator, process string) 
 	var err error
 	done := make(chan bool)
 	go func() {
-		fmt.Fprint(logger, "Starting dyno")
+		fmt.Fprint(logger, "Starting dyno\n")
 		err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+dyno.Host, "sudo", "/tmp/postdeploy.py", dyno.Container)
 		done <- true
 	}()
@@ -511,16 +513,13 @@ func writeDeployScripts() error {
 	return nil
 }
 
-func (this *Deployment) calculateDynosToDestroy() ([]Dyno, bool, error) {
+func (this *Deployment) calculateDynosToDestroy() ([]*Dyno, bool) {
 	// Track whether or not new dynos will be allocated.  If no new allocations are necessary, no rsync'ing will be necessary.
 	allocatingNewDynos := false
 	// Build list of running dynos to be deactivated in the LB config upon successful deployment.
-	removeDynos := []Dyno{}
+	removeDynos := []*Dyno{}
 	for process, numDynos := range this.Application.Processes {
-		runningDynos, err := this.Server.GetRunningDynos(this.Application.Name, process)
-		if err != nil {
-			return removeDynos, allocatingNewDynos, err
-		}
+		runningDynos := this.Server.SystemDynoState.GetRunningDynos(this.Application.Name, process)
 		if !this.ScalingOnly {
 			removeDynos = append(removeDynos, runningDynos...)
 			allocatingNewDynos = true
@@ -537,7 +536,7 @@ func (this *Deployment) calculateDynosToDestroy() ([]Dyno, bool, error) {
 		}
 	}
 	fmt.Fprintf(this.Logger, "calculateDynosToDestroy :: calculated to remove the following dynos: %v\n", removeDynos)
-	return removeDynos, allocatingNewDynos, nil
+	return removeDynos, allocatingNewDynos
 }
 
 func (this *Deployment) syncNodes() ([]*Node, error) {
@@ -576,9 +575,9 @@ func (this *Deployment) syncNodes() ([]*Node, error) {
 	return availableNodes, nil
 }
 
-func (this *Deployment) startDynos(availableNodes []*Node, titleLogger io.Writer) ([]Dyno, error) {
+func (this *Deployment) startDynos(availableNodes []*Node, titleLogger io.Writer) ([]*Dyno, error) {
 	// Now we've successfully sync'd and we have a list of nodes available to deploy to.
-	addDynos := []Dyno{}
+	addDynos := []*Dyno{}
 
 	dynoGenerator, err := this.Server.NewDynoGenerator(availableNodes, this.Application.Name, this.Version)
 	if err != nil {
@@ -586,7 +585,7 @@ func (this *Deployment) startDynos(availableNodes []*Node, titleLogger io.Writer
 	}
 
 	type StartResult struct {
-		dyno Dyno
+		dyno *Dyno
 		err  error
 	}
 	startedChannel := make(chan StartResult)
@@ -677,10 +676,7 @@ func (this *Deployment) deploy() error {
 		return err
 	}
 
-	removeDynos, allocatingNewDynos, err := this.calculateDynosToDestroy()
-	if err != nil {
-		return err
-	}
+	removeDynos, allocatingNewDynos := this.calculateDynosToDestroy()
 
 	if allocatingNewDynos {
 		availableNodes, err := this.syncNodes()
@@ -725,7 +721,7 @@ func (this *Deployment) deploy() error {
 		// Trigger old dynos to shutdown.
 		for _, removeDyno := range removeDynos {
 			fmt.Fprintf(titleLogger, "Shutting down dyno: %v\n", removeDyno.Container)
-			go func(rd Dyno) {
+			go func(rd *Dyno) {
 				rd.Shutdown(&Executor{os.Stdout})
 			}(removeDyno)
 		}
@@ -996,12 +992,10 @@ func (this *Server) ManageProcessState(action string, conn net.Conn, app *Applic
 	if _, ok := app.Processes[processType]; !ok {
 		return fmt.Errorf("unrecognized process type: %v", processType)
 	}
-	dynos, err := this.GetRunningDynos(app.Name, processType)
-	if err != nil {
-		return err
-	}
+	dynos := this.SystemDynoState.GetRunningDynos(app.Name, processType)
 	logger := NewLogger(NewTimeLogger(NewMessageLogger(conn)), fmt.Sprintf("[ps:%v] ", action))
 	executor := &Executor{logger}
+	var err error
 	for _, dyno := range dynos {
 		if dyno.Process == processType {
 			if action == "stop" {

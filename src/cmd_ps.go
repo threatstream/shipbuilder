@@ -9,11 +9,7 @@ func (this *Server) Ps_List(conn net.Conn, applicationName string) error {
 	return this.WithApplication(applicationName, func(app *Application, cfg *Config) error {
 		str := ""
 		for process, numDynos := range app.Processes {
-			dynos, err := this.GetRunningDynos(app.Name, process)
-			if err != nil {
-				Logf(conn, "Error: %v (process was '%v')", err, process)
-				continue
-			}
+			dynos := this.SystemDynoState.GetRunningDynos(app.Name, process)
 			Logf(conn, "=== %v: dyno scale=%v, actual=%v\n", process, numDynos, len(dynos))
 			for _, dyno := range dynos {
 				Logf(conn, "%v @ %v [%v:%v]\n", process, dyno.Version, dyno.Host, dyno.Port)
