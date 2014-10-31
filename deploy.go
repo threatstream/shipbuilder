@@ -36,6 +36,12 @@ var (
 # SHIPBUILDER SYSTEM DEPLOYMENT SCRIPT ::       NEVER RUN THIS MANUALLY!       #
 ################################################################################
 
+sudo --non-interactive echo 'testing for sudo capability' 1>/dev/null 2>/dev/null
+rc=$?
+test $rc -ne 0 && echo "error: sudo capability is required but not is not available for account=$(whoami)@$(hostname), operation aborted" 1>&2 && exit 1
+
+set -e -x
+
 rm -rf /tmp/build
 mkdir -p /tmp/build
 echo 'Extracting'
