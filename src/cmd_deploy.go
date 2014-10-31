@@ -174,7 +174,7 @@ func (this *Deployment) prepareEnvironmentVariables(e *Executor) error {
 func (this *Deployment) prepareShellEnvironment(e *Executor) error {
 	// Update the container's /etc/passwd file to use the `envdirbash` script and /app/src as the user's home directory.
 	escapedAppSrc := strings.Replace(this.Application.LocalSrcDir(), "/", `\/`, -1)
-	err := e.Run("sudo",
+	err := e.Run("sudo", "--non-interactive",
 		"sed", "-i",
 		`s/^\(`+DEFAULT_NODE_USERNAME+`:.*:\):\/home\/`+DEFAULT_NODE_USERNAME+`:\/bin\/bash$/\1:`+escapedAppSrc+`:\/bin\/bash/g`,
 		this.Application.RootFsDir()+"/etc/passwd",
@@ -428,7 +428,7 @@ func (this *Deployment) syncNode(node *Node) error {
 
 	// TODO: Maybe add fail check to clone operation.
 	err := e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+node.Host,
-		"sudo", "/bin/bash", "-c",
+		"sudo", "--non-interactive", "/bin/bash", "-c",
 		`"test ! -d '`+LXC_DIR+`/`+this.Application.Name+`' && lxc-clone -B `+lxcFs+` -s -o base-`+this.Application.BuildPack+` -n `+this.Application.Name+` || echo 'app image already exists'"`,
 	)
 	if err != nil {
@@ -437,7 +437,7 @@ func (this *Deployment) syncNode(node *Node) error {
 	}
 	// Rsync the application container over.
 	//rsync --recursive --links --hard-links --devices --specials --owner --group --perms --times --acls --delete --xattrs --numeric-ids
-	err = e.Run("sudo", "rsync",
+	err = e.Run("sudo", "--non-interactive", "rsync",
 		"--recursive",
 		"--links",
 		"--hard-links",
@@ -479,7 +479,7 @@ func (this *Deployment) startDyno(dynoGenerator *DynoGenerator, process string) 
 	done := make(chan bool)
 	go func() {
 		fmt.Fprint(logger, "Starting dyno\n")
-		err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+dyno.Host, "sudo", "/tmp/postdeploy.py", dyno.Container)
+		err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+dyno.Host, "sudo", "--non-interactive", "/tmp/postdeploy.py", dyno.Container)
 		done <- true
 	}()
 	select {

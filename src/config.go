@@ -110,7 +110,7 @@ var (
 
 var (
 	ntpServers     = "0.pool.ntp.org 1.pool.ntp.org time.apple.com time.windows.com"
-	ntpSyncCommand = "sudo service ntp stop && sudo /usr/sbin/ntpdate " + ntpServers + " && sudo service ntp start"
+	ntpSyncCommand = "sudo --non-interactive service ntp stop && sudo /usr/sbin/ntpdate " + ntpServers + " && sudo --non-interactive service ntp start"
 )
 
 func (this *Application) LxcDir() string {
@@ -518,7 +518,7 @@ func (this *Server) SyncLoadBalancers(e *Executor, addDynos []*Dyno, removeDynos
 					return
 				}
 				err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+lb,
-					`sudo /bin/bash -c 'if [ "$(sudo service haproxy status)" = "haproxy not running." ]; then sudo service haproxy start; else sudo service haproxy reload; fi'`,
+					`sudo --non-interactive /bin/bash -c 'if [ "$(sudo --non-interactive service haproxy status)" = "haproxy not running." ]; then sudo --non-interactive service haproxy start; else sudo --non-interactive service haproxy reload; fi'`,
 				)
 				if err != nil {
 					c <- err
@@ -581,7 +581,7 @@ func (this *Server) GetActiveLoadBalancerConfig() (string, error) {
 
 		syncLoadBalancerLock.Lock()
 		defer syncLoadBalancerLock.Unlock()
-		this.currentLoadBalancerConfig, err = RemoteCommand(cfg.LoadBalancers[0], "sudo cat /etc/haproxy/haproxy.cfg")
+		this.currentLoadBalancerConfig, err = RemoteCommand(cfg.LoadBalancers[0], "sudo --non-interactive cat /etc/haproxy/haproxy.cfg")
 		if err != nil {
 			return this.currentLoadBalancerConfig, err
 		}

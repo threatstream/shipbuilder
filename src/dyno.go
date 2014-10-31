@@ -70,11 +70,15 @@ const (
 	DYNO_STATE_RUNNING   = "RUNNING"
 	DYNO_STATE_STOPPED   = "STOPPED"
 	DYNO_STATE_STOPPING  = "STOPPING"
+
+	// Command which avoids running if other identical commands are being used.
+	LXC_STATE_MONITOR_COMMAND = `sudo --non-interactive lxc-ls --fancy | sed '1,2d' | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/" && sudo --non-interactive lxc-monitor '.*'`
+
+	// Memory monitoring loop.
+	MEMORY_MONITOR_COMMAND = `while [ true ] ; do free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$' ; sleep 10 ; done`
 )
 
 var (
-	//dynoPortTracker = DynoPortTracker{allocations: map[string][]int{}, lock: sync.Mutex{}}
-
 	dynoStateParserRe  = regexp.MustCompile(`'([^']+) changed state to \[([^\]]+)\]'`)
 	freeMemoryParserRe = regexp.MustCompile(`[0-9]+`)
 )
@@ -147,10 +151,10 @@ func (this *Dyno) Shutdown(e *Executor) error {
 	fmt.Fprintf(e.logger, "Shutting down dyno: %v\n", this.Info())
 	if this.State == DYNO_STATE_RUNNING {
 		// Shutdown then destroy.
-		return e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+this.Host, "sudo", "/tmp/shutdown_container.py", this.Container)
+		return e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+this.Host, "sudo", "--non-interactive", "/tmp/shutdown_container.py", this.Container)
 	} else {
 		// Destroy only.
-		return e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+this.Host, "sudo", "/tmp/shutdown_container.py", this.Container, "destroy-only")
+		return e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+this.Host, "sudo", "--non-interactive", "/tmp/shutdown_container.py", this.Container, "destroy-only")
 	}
 }
 
@@ -159,7 +163,7 @@ func (this *Dyno) AttachAndExecute(e *Executor, args ...string) error {
 	if this.State != DYNO_STATE_RUNNING {
 		return fmt.Errorf("can't run `%v` when dyno is not running, details: %v", args, this.Info())
 	}
-	args = AppendStrings([]string{DEFAULT_NODE_USERNAME + "@" + this.Host, "sudo", "lxc-attach", "-n", this.Container, "--"}, args...)
+	args = AppendStrings([]string{DEFAULT_NODE_USERNAME + "@" + this.Host, "sudo", "--non-interactive", "lxc-attach", "-n", this.Container, "--"}, args...)
 	return e.Run("ssh", args...)
 }
 

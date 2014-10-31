@@ -68,7 +68,7 @@ func (this *Server) Apps_Create(conn net.Conn, applicationName string, buildPack
 			"cd " + GIT_DIRECTORY + "/" + applicationName + " && git symbolic-ref HEAD refs/heads/not-a-real-branch", // Make master deletable.
 			"chmod -R 777 " + GIT_DIRECTORY + "/" + applicationName,
 		} {
-			err = e.Run("sudo", "/bin/bash", "-c", command)
+			err = e.Run("sudo", "--non-interactive", "/bin/bash", "-c", command)
 			if err != nil {
 				return err
 			}
@@ -150,7 +150,7 @@ func (this *Server) Apps_Destroy(conn net.Conn, applicationName string) error {
 		}
 		if gitPathExists {
 			fmt.Fprint(dimLogger, "Removing git path: %v\n", gitPath)
-			e.Run("sudo", "rm", "-r", gitPath)
+			e.Run("sudo", "--non-interactive", "rm", "-r", gitPath)
 		}
 
 		lxcContainerExists, err := PathExists(LXC_DIR + "/" + applicationName)
