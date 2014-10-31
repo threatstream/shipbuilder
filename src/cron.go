@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"io"
+	"log"
 	"os"
 
 	"github.com/robfig/cron"
@@ -15,6 +15,8 @@ type (
 		Fn       func(io.Writer) error
 	}
 )
+
+// TODO: Add daily cron task to cleanup SB build box release containers.
 
 func (this *Server) GetCronTasks() []CronTask {
 	cronTasks := []CronTask{
@@ -42,22 +44,22 @@ func (this *Server) GetCronTasks() []CronTask {
 
 func (this *Server) startCrons() {
 	c := cron.New()
-	fmt.Printf("[cron] Configuring..\n")
+	log.Printf("[cron] Configuring..\n")
 	for _, cronTask := range this.GetCronTasks() {
 		if cronTask.Name == "ZfsMaintenance" && lxcFs != "zfs" {
-			fmt.Printf(`[cron] Refusing to add ZFS maintenance cron task because the lxcFs is actuallty "%v"\n`, lxcFs)
+			log.Printf(`[cron] Refusing to add ZFS maintenance cron task because the lxcFs is actuallty "%v"\n`, lxcFs)
 			continue
 		}
-		fmt.Printf("[cron] Adding cron task '%v'\n", cronTask.Name)
+		log.Printf("[cron] Adding cron task '%v'\n", cronTask.Name)
 		c.AddFunc(cronTask.Schedule, func() {
 			logger := NewLogger(os.Stdout, "["+cronTask.Name+"] ")
 			err := cronTask.Fn(logger)
 			if err != nil {
-				fmt.Printf("cron: %v ended with error=%v\n", cronTask.Name, err)
+				log.Printf("[cron] task=%v ended with error=%v\n", cronTask.Name, err)
 			}
 		})
 	}
-	fmt.Printf("[cron] Starting..\n")
+	log.Printf("[cron] Starting..\n")
 	c.Start()
-	fmt.Printf("[cron] Cron successfully launched.\n")
+	log.Printf("[cron] Cron successfully launched.\n")
 }
