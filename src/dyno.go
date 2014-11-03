@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/jaytaylor/streamon"
@@ -52,11 +54,6 @@ type (
 		version     string
 	}
 
-	DynoPortTracker struct {
-		allocations map[string][]int
-		lock        sync.Mutex
-	}
-
 	SystemDynoState struct {
 		NodeStates     map[string]NodeStatus
 		NodeStatesLock sync.Mutex
@@ -70,18 +67,56 @@ const (
 	DYNO_STATE_RUNNING   = "RUNNING"
 	DYNO_STATE_STOPPED   = "STOPPED"
 	DYNO_STATE_STOPPING  = "STOPPING"
-
-	// Command which avoids running if other identical commands are being used.
-	LXC_STATE_MONITOR_COMMAND = `sudo --non-interactive lxc-ls --fancy | sed '1,2d' | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/" && sudo --non-interactive lxc-monitor '.*'`
-
-	// Memory monitoring loop.
-	MEMORY_MONITOR_COMMAND = `while [ true ] ; do free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$' ; sleep 10 ; done`
 )
 
 var (
-	dynoStateParserRe  = regexp.MustCompile(`'([^']+) changed state to \[([^\]]+)\]'`)
-	freeMemoryParserRe = regexp.MustCompile(`[0-9]+`)
+	dynoStateParserRe  = regexp.MustCompile(`^'([^']+)' changed state to \[([^\]]+)\]$`)
+	freeMemoryParserRe = regexp.MustCompile(`^[0-9]+$`)
+
+	DYNO_STATE_MONITOR_COMMAND = template.New("DYNO_STATE_MONITOR_COMMAND")
+	MEMORY_MONITOR_COMMAND     = template.New("MEMORY_MONITOR_COMMAND")
 )
+
+// Initializes both the dyno state monitor and memory monitor templates.
+//
+// Notice the use of "-t -t" (multiple "-t" flags) used to force TTY allocation and ensure SSH command terminates upon disconnection.
+func initDynoTemplates() {
+	// Command which avoids running if other identical commands are being used.
+	template.Must(DYNO_STATE_MONITOR_COMMAND.Parse(
+		`echo "
+( tmux kill-session -t dyno-monitor 1>/dev/null 2>/dev/null || : ) && \
+tmux -q new-session -d -s dyno-monitor && \
+tmux -q send-keys -t dyno-monitor.0 \
+    \"( sudo --non-interactive lxc-ls --fancy | grep -v STOPPED | sed '1,2d' | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed \\\"s/\(.*\) \(.*\)/'\1' changed state to [\2]/\\\" && sudo --non-interactive lxc-monitor '.*' ) > ` + DYNO_STATE_MONITOR_FILE_PATH + `\" ENTER && \
+tail -n99999 -f ` + DYNO_STATE_MONITOR_FILE_PATH + `" | ssh ` + DEFAULT_PERSISTENT_SSH_PARAMETERS + ` -t -t {{.Host}}`))
+
+	// Memory monitoring loop.
+	template.Must(MEMORY_MONITOR_COMMAND.Parse(
+		`echo "
+( tmux kill-session -t memory-monitor 1>/dev/null 2>/dev/null || : ) && \
+tmux -q new-session -d -s memory-monitor && \
+echo '' > ` + MEMORY_MONITOR_FILE_PATH + ` && \
+tmux -q send-keys -t memory-monitor.0 \"while [ true ] ; do free -m | sed '1d' | head -n1 | sed 's/ \+/ /g' | cut -d' ' -f4 >> ` + MEMORY_MONITOR_FILE_PATH + ` ; sleep ` + MEMORY_MONITOR_INTERVAL_SECONDS + ` ; done\" ENTER && \
+tail -f ` + MEMORY_MONITOR_FILE_PATH + `" | ssh ` + DEFAULT_PERSISTENT_SSH_PARAMETERS + ` -t -t {{.Host}}`))
+}
+
+func RenderTemplateToString(t *template.Template, data interface{}) (string, error) {
+	buffer := bytes.Buffer{}
+	err := t.Execute(&buffer, data)
+	return buffer.String(), err
+}
+
+func GetDynoStateMonitorCommand(host string) (string, error) {
+	data := struct{ Host string }{DEFAULT_NODE_USERNAME + `@` + host}
+	command, err := RenderTemplateToString(DYNO_STATE_MONITOR_COMMAND, data)
+	return command, err
+}
+
+func GetMemoryMonitorCommand(host string) (string, error) {
+	data := struct{ Host string }{DEFAULT_NODE_USERNAME + `@` + host}
+	command, err := RenderTemplateToString(MEMORY_MONITOR_COMMAND, data)
+	return command, err
+}
 
 func (this *SystemDynoState) NewNodeState(host string) *NodeStatus {
 	nodeState := &NodeStatus{
@@ -89,9 +124,10 @@ func (this *SystemDynoState) NewNodeState(host string) *NodeStatus {
 		FreeMemoryMb:    -1,
 		Dynos:           map[string]*Dyno{},
 		DeployMarker:    -1,
-		SystemDynoState: this,
 		Ts:              time.Now(),
+		SystemDynoState: this,
 		Error:           nil,
+		lock:            sync.Mutex{},
 	}
 	return nodeState
 }
@@ -209,90 +245,6 @@ func (this *SystemDynoState) AutoLockHostFn(host string, fn func(string) error) 
 	return fn(host)
 }
 
-func (this *NodeStatus) StartMonitoring() error {
-	this.lock.Lock()
-	this.lock.Unlock()
-	if this.lxcMonitorQuitChannel != nil {
-		return fmt.Errorf("NodeStatus.StartMonitoring: host=%v illegal operation when lxcMonitorQuitChannel is not nil", this.Host)
-	}
-	if this.memoryMonitorQuitChannel != nil {
-		return fmt.Errorf("NodeStatus.StartMonitoring: host=%v illegal operation when memoryMonitorQuitChannel is not nil", this.Host)
-	}
-	this.lxcMonitorQuitChannel = make(chan bool)
-	this.memoryMonitorQuitChannel = make(chan bool)
-	return nil
-}
-
-func (this *NodeStatus) StopMonitoring() error {
-	this.lock.Lock()
-	this.lock.Unlock()
-	if this.lxcMonitorQuitChannel == nil {
-		return fmt.Errorf("NodeStatus.StopMonitoring: host=%v illegal operation when lxcMonitorQuitChannel is not nil", this.Host)
-	}
-	if this.memoryMonitorQuitChannel == nil {
-		return fmt.Errorf("NodeStatus.StopMonitoring: host=%v illegal operation when memoryMonitorQuitChannel is not nil", this.Host)
-	}
-	this.lxcMonitorQuitChannel <- true
-	close(this.lxcMonitorQuitChannel)
-	this.lxcMonitorQuitChannel = nil
-	this.memoryMonitorQuitChannel <- true
-	close(this.memoryMonitorQuitChannel)
-	this.memoryMonitorQuitChannel = nil
-	return nil
-}
-
-func quittableStreamAttachLoop(commandArgs []string, re *regexp.Regexp, quit <-chan bool, matchCb func([]string)) {
-	for {
-		commandListener, err := streamon.NewCommandListener(commandArgs, re)
-		if err != nil {
-			panic(err)
-		}
-		ch := make(chan []string)
-		commandListener.Attach(ch)
-		for ch != nil {
-			select {
-			case match, ok := <-ch:
-				if !ok {
-					ch = nil
-				}
-				matchCb(match)
-
-			case <-quit:
-				log.Printf("quittableStreamAttachLoop: quit message received for commandArgs=%v, goroutine terminating\n", commandArgs)
-				return
-			}
-		}
-	}
-}
-
-// TODO: plug this into node add/remove
-func (this *SystemDynoState) monitorMemory(nodeState NodeStatus) {
-	frontArgs := PersistentSshCommand(nodeState.Host)
-	commandArgs := append(frontArgs, MEMORY_MONITOR_COMMAND)
-	cb := func(match []string) {
-		freeMemoryMb, err := strconv.Atoi(match[0])
-		if err != nil {
-			log.Printf("SystemDynoState.monitorNodeMemory: error parsing value=%v to an integer: %v\n", match[0], err)
-			return
-		}
-		this.ProcessFreeMemoryUpdate(nodeState.Host, freeMemoryMb)
-	}
-	log.Printf("SystemDynoState.monitorNodeMemory: starting memory monitor for host=%v\n", nodeState.Host)
-	quittableStreamAttachLoop(commandArgs, freeMemoryParserRe, nodeState.memoryMonitorQuitChannel, cb)
-}
-
-// TODO: plug this into node add/remove
-// Continually loops the monitoring upon interruption until the a quit channel message is received.
-func (this *SystemDynoState) monitorHostDynos(nodeState NodeStatus) {
-	frontArgs := PersistentSshCommand(nodeState.Host)
-	commandArgs := append(frontArgs, LXC_STATE_MONITOR_COMMAND)
-	cb := func(match []string) {
-		this.ProcessDynoUpdate(nodeState.Host, match[1], match[2])
-	}
-	log.Printf("SystemDynoState.monitorHostDynos: starting dyno monitor for host=%v\n", nodeState.Host)
-	quittableStreamAttachLoop(commandArgs, dynoStateParserRe, nodeState.lxcMonitorQuitChannel, cb)
-}
-
 // Get or initialize a new NodeStatus for the given host.
 // If a new NodeStatus is created, monitoring will automatically be started.
 //
@@ -330,104 +282,124 @@ func (this *SystemDynoState) RemoveHost(host string) {
 				return err
 			}
 			delete(this.NodeStates, host)
+			log.Printf("SystemDynoState.RemoveHost: removed host=%v\n", host)
 		}
 		return nil
 	})
 }
 
-// // Returns array of ports in-use by Dynos.
-// //
-// // Not thread-safe (invoker is responsible for locking appropriately).
-// func (this *SystemDynoState) getDynoPorts() []int {
-// 	used := []int{}
-// 	for _, nodeState := range this.NodeStates {
-// 		for _, dyno := range nodeState.Dynos {
-// 			used = append(used, dyno.PortNumber)
-// 		}
-// 	}
-// 	return used
-// }
+func (this *NodeStatus) StartMonitoring() error {
+	this.lock.Lock()
+	this.lock.Unlock()
+	if this.lxcMonitorQuitChannel != nil {
+		return fmt.Errorf("NodeStatus.StartMonitoring: host=%v illegal operation when lxcMonitorQuitChannel is not nil", this.Host)
+	}
+	if this.memoryMonitorQuitChannel != nil {
+		return fmt.Errorf("NodeStatus.StartMonitoring: host=%v illegal operation when memoryMonitorQuitChannel is not nil", this.Host)
+	}
+	this.lxcMonitorQuitChannel = make(chan bool)
+	go this.SystemDynoState.monitorHostDynoActivity(*this)
+	log.Printf("NodeStatus.StartMonitoring: Launched dyno activity monitor for host=%v", this.Host)
+	this.memoryMonitorQuitChannel = make(chan bool)
+	go this.SystemDynoState.monitorHostMemory(*this)
+	log.Printf("NodeStatus.StartMonitoring: Launched memory monitor for host=%v", this.Host)
+	return nil
+}
 
-// // Returns array of reserved port numbers.
-// //
-// // Not thread-safe (invoker is responsible for locking appropriately).
-// func (this *SystemDynoState) getReservedPorts() []int {
-// 	used := []int{}
-// 	for port, _ := range this.PortReservations {
-// 		used = append(used, port)
-// 	}
-// 	return used
-// }
+func (this *NodeStatus) StopMonitoring() error {
+	this.lock.Lock()
+	this.lock.Unlock()
+	if this.lxcMonitorQuitChannel == nil {
+		return fmt.Errorf("NodeStatus.StopMonitoring: illegal operation when lxcMonitorQuitChannel is not nil for host=%v", this.Host)
+	}
+	if this.memoryMonitorQuitChannel == nil {
+		return fmt.Errorf("NodeStatus.StopMonitoring: illegal operation when memoryMonitorQuitChannel is not nil for host=%v", this.Host)
+	}
+	log.Printf("NodeStatus.StopMonitoring: Requesting termination of dyno activity monitor for host=%v ..", this.Host)
+	this.lxcMonitorQuitChannel <- true
+	close(this.lxcMonitorQuitChannel)
+	this.lxcMonitorQuitChannel = nil
+	log.Printf("NodeStatus.StopMonitoring: Successfully terminated dyno activity monitor for host=%v", this.Host)
+	log.Printf("NodeStatus.StopMonitoring: Requesting termination of memory monitor for host=%v ..", this.Host)
+	this.memoryMonitorQuitChannel <- true
+	close(this.memoryMonitorQuitChannel)
+	this.memoryMonitorQuitChannel = nil
+	log.Printf("NodeStatus.StopMonitoring: Successfully terminated memory monitor for host=%v", this.Host)
+	return nil
+}
 
-// // Returns both the ports in use by dynos as well as port reservations.
-// func (this *SystemDynoState) GetAllUsedPorts() []int {
-// 	this.portReservationsLock.Lock()
-// 	defer this.portReservationsLock.Unlock()
-// 	this.NodeStatesLock.Lock()
-// 	defer this.NodeStatesLock.Unlock()
-// 	used := append(this.getDynoPorts(), this.getReservedPorts()...)
-// 	return used
-// }
+func quittableStreamAttachLoop(commandArgs []string, re *regexp.Regexp, quit chan bool, matchCb func([]string)) {
+	for {
+		commandListener, err := streamon.NewCommandListener(commandArgs, re)
+		if err != nil {
+			panic(err)
+		}
+		ch := make(chan []string)
+		commandListener.Attach(ch)
+		for ch != nil {
+			select {
+			case match, ok := <-ch: //, ok := <-ch:
+				if !ok {
+					ch = nil
+					log.Printf("quittableStreamAttachLoop: Restarting commandListener due to closed channel, commandArgs=%v\n", commandArgs)
+					break
+				}
+				// log.Printf("quittable: received match=%v for cmd=%v regex=%v\n", match, commandArgs, re.String())
+				matchCb(match)
 
-// // Add a port reservation.
-// func (this *SystemDynoState) ReservePort(port int) error {
-// 	if port < DYNO_PORT_ALLOCATION_START || port > DYNO_PORT_ALLOCATION_END {
-// 		return fmt.Errorf("SystemDynoState.ReservePort :: requested port=%v not in allowed range of %v-%v", port, DYNO_PORT_ALLOCATION_START, DYNO_PORT_ALLOCATION_END)
-// 	}
+			case <-quit:
+				log.Printf("quittableStreamAttachLoop: Quit message received for commandArgs=%v, goroutine terminating\n", commandArgs)
+				return
+			}
+		}
+	}
+}
 
-// 	this.portReservationsLock.Lock()
-// 	defer this.portReservationsLock.Unlock()
-// 	if ts, ok := this.PortReservations[port]; ok {
-// 		return fmt.Errorf("SystemDynoState.ReservePort :: port %v was already reserved since %v ago", time.Since(ts).String())
-// 	}
+// TODO: plug this into node add/remove
+// Continually loops the monitoring upon interruption until the a quit channel message is received.
+func (this *SystemDynoState) monitorHostDynoActivity(nodeState NodeStatus) {
+	commandString, err := GetDynoStateMonitorCommand(nodeState.Host)
+	if err != nil {
+		panic(err)
+	}
+	commandArgs := append([]string{"bash", "-c"}, commandString)
+	cb := func(match []string) {
+		// log.Printf("dyno monitor triggered, match=%v (%v)\n", match, len(match))
+		this.ProcessDynoUpdate(nodeState.Host, match[1], match[2])
+	}
+	log.Printf("SystemDynoState.monitorHostDynoActivity: starting dyno monitor for host=%v\n", nodeState.Host)
+	quittableStreamAttachLoop(commandArgs, dynoStateParserRe, nodeState.lxcMonitorQuitChannel, cb)
+}
 
-// 	this.NodeStatesLock.Lock()
-// 	defer this.NodeStatesLock.Unlock()
-// 	for _, dynoPort := range this.getDynoPorts() {
-// 		if port == dynoPort {
-// 			return fmt.Errorf("SystemDynoState.ReservePort :: port %v is already in use for an active dyno")
-// 		}
-// 	}
-
-// 	// Add the port reservation.
-// 	this.PortReservations[port] = time.Now()
-
-// 	// Add automatic expiration.
-// 	go func(port int) {
-// 		for {
-// 			select {
-// 			case <-time.After(DYNO_PORT_ALLOCATION_EXPIRY_SECONDS * time.Second):
-// 				this.ClearPortReservationIfExists(port)
-// 				return
-// 			}
-// 		}
-// 	}(port)
-
-// 	return nil
-// }
-
-// // Clear a port reservation.
-// func (this *SystemDynoState) ClearPortReservationIfExists(port int) {
-// 	this.portReservationsLock.Lock()
-// 	defer this.portReservationsLock.Unlock()
-// 	if ts, ok := this.PortReservations[port]; ok {
-// 		log.Printf("ClearPortReservationIfExists :: Clearing port reservation for port=%v which was reserved %s ago\n", port, time.Since(ts).String())
-// 		delete(this.PortReservations, port)
-// 	}
-// }
+// TODO: plug this into node add/remove
+func (this *SystemDynoState) monitorHostMemory(nodeState NodeStatus) {
+	commandString, err := GetMemoryMonitorCommand(nodeState.Host)
+	if err != nil {
+		panic(err)
+	}
+	commandArgs := append([]string{"bash", "-c"}, commandString)
+	cb := func(match []string) {
+		freeMemoryMb, err := strconv.Atoi(match[0])
+		if err != nil {
+			log.Printf("SystemDynoState.monitorNodeMemory: error parsing value=%v to an integer: %v\n", match[0], err)
+			return
+		}
+		this.ProcessFreeMemoryUpdate(nodeState.Host, freeMemoryMb)
+	}
+	log.Printf("SystemDynoState.monitorNodeMemory: starting memory monitor for host=%v\n", nodeState.Host)
+	quittableStreamAttachLoop(commandArgs, freeMemoryParserRe, nodeState.memoryMonitorQuitChannel, cb)
+}
 
 // Process an update (these originate from `lxc-monitor '.*'`, mutate state accordingly.
 func (this *SystemDynoState) ProcessDynoUpdate(host, container, state string) error {
 	log.Printf("SystemDynoState.ProcessDynoUpdate: update received host=%v container=%v state=%v\n", host, container, state)
 	return this.AutoLockHostFn(host, func(host string) error {
 		// Get node state for specified host.
-		var nodeState NodeStatus
-		if nodeState, ok := this.NodeStates[host]; !ok {
-			// Add new node state.
-			newNodeState := this.NewNodeState(host)
-			nodeState = *newNodeState
-			this.NodeStates[host] = nodeState
-		}
+		nodeState := this.getOrInitNodeState(host)
+		// if nodeState == nil {
+		// 	log.Printf("SystemDynoState.ProcessDynoUpdate: error, was unable to get node state, update not processed for host=%v container=%v state=%v\n", host, container, state)
+		// 	return
+		// }
 		dynoPtr := ContainerToDyno(host, container, state)
 		if state == DYNO_STATE_ALLOCATED {
 			// Ensure there are no port conflicts.
@@ -458,6 +430,7 @@ func (this *SystemDynoState) ProcessDynoUpdate(host, container, state string) er
 }
 
 func (this *SystemDynoState) ProcessFreeMemoryUpdate(host string, freeMemoryMb int) {
+	log.Printf("SystemDynoState.ProcessFreeMemoryUpdate: update received host=%v freeMemoryMb=%v\n", host, freeMemoryMb)
 	this.AutoLockHostFn(host, func(host string) error {
 		nodeState := this.getOrInitNodeState(host)
 		nodeState.FreeMemoryMb = freeMemoryMb
@@ -520,60 +493,6 @@ func (this *SystemDynoState) LookupDynoByHostPort(host string, port int, matchSt
 	})
 	return result
 }
-
-// // Check if a port is already in use.
-// func (this *DynoPortTracker) AlreadyInUse(host string, port int) bool {
-// 	this.lock.Lock()
-// 	defer this.lock.Unlock()
-// 	if ports, ok := this.allocations[host]; ok {
-// 		for _, p := range ports {
-// 			if p == port {
-// 				return true
-// 			}
-// 		}
-// 	}
-// 	return false
-// }
-
-// // Attempt to allocate a port for a node host.
-// func (this *DynoPortTracker) Allocate(host string, port int) error {
-// 	this.lock.Lock()
-// 	defer this.lock.Unlock()
-// 	if ports, ok := this.allocations[host]; ok {
-// 		// Require that the port not be already in use.
-// 		for _, p := range ports {
-// 			if p == port {
-// 				return fmt.Errorf("Host/port combination %v/%v is already in use", host, port)
-// 			}
-// 		}
-// 		this.allocations[host] = append(ports, port)
-// 	} else {
-// 		this.allocations[host] = []int{port}
-// 	}
-// 	// Schedule the port to be automatically freed once the status monitor will have picked up the in-use port.
-// 	go func(host string, port int) {
-// 		time.Sleep(1200 * time.Second)
-// 		this.Release(host, port)
-// 	}(host, port)
-// 	fmt.Printf("DynoPortTracker.Allocate: added host=%v port=%v\n", host, port)
-// 	return nil
-// }
-
-// // Release a previously allocated host/port pair if it is still in the allocations table.
-// func (this *DynoPortTracker) Release(host string, port int) {
-// 	fmt.Printf("DynoPortTracker.Release: releasing port %v from host %v\n", port, host)
-// 	this.lock.Lock()
-// 	defer this.lock.Unlock()
-// 	if ports, ok := this.allocations[host]; ok {
-// 		newPorts := []int{}
-// 		for _, p := range ports {
-// 			if p != port {
-// 				newPorts = append(newPorts, p)
-// 			}
-// 		}
-// 		this.allocations[host] = newPorts
-// 	}
-// }
 
 // Determine which host to allocate the next dyno on.
 func (this *Server) NewDynoGenerator(nodes []*Node, application string, version string) (*DynoGenerator, error) {
@@ -665,7 +584,6 @@ func (this *SystemDynoState) AllocateNextDyno(nodeState *NodeStatus, dynoGenerat
 	return dyno, err
 }
 
-// A
 func (this *DynoGenerator) Next(process string) *Dyno {
 	nodeState := this.statuses[this.position%len(this.statuses)].status
 	this.position++
@@ -702,31 +620,3 @@ func AppendIfMissing(slice []int, i int) []int {
 	}
 	return append(slice, i)
 }
-
-// // Get the next available port for a node.
-// func (this *Server) getNextPort(nodeState *NodeStatus, usedPorts *[]int) int {
-// 	port := DYNO_PORT_ALLOCATION_START
-// 	for _, dyno := range nodeState.Dynos {
-// 		if dyno.State == DYNO_STATE_RUNNING && dyno.PortNumber > 0 {
-// 			*usedPorts = AppendIfMissing(*usedPorts, dyno.PortNumber)
-// 		}
-// 	}
-// 	sort.Ints(*usedPorts)
-// 	log.Printf("Server.getNextPort :: Found used ports=%v for host=%v\n", *usedPorts, nodeState.Host)
-// 	for _, usedPort := range *usedPorts {
-// 		if port == usedPort || dynoPortTracker.AlreadyInUse(nodeState.Host, port) {
-// 			port++
-// 		} else if usedPort > port {
-// 			break
-// 		}
-// 	}
-// 	err := dynoPortTracker.Allocate(nodeState.Host, port)
-// 	if err != nil {
-// 		log.Printf("Server.getNextPort :: host/port combination %v/%v already in use, will find another\n", nodeState.Host, port)
-// 		*usedPorts = AppendIfMissing(*usedPorts, port)
-// 		return this.getNextPort(nodeState, usedPorts)
-// 	}
-// 	log.Printf("Server.getNextPort :: Result port: %v\n", port)
-// 	*usedPorts = AppendIfMissing(*usedPorts, port)
-// 	return port
-// }

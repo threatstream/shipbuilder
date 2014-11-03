@@ -14,13 +14,9 @@ import (
 // 	}
 // )
 
-const (
-	LXC_STATE_MONITOR_COMMAND = `test $(pgrep --exact lxc-ls | wc -l) -eq 0 && ( sudo lxc-ls --fancy | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/" && sudo lxc-monitor '.*' ) || exit 1`
-
-	MEMORY_MONITOR_COMMAND = `while [ true ] ; do free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$' ; done`
-
-	// STATUS_MONITOR_CHECK_COMMAND = `echo $(free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$') $(sudo lxc-ls --fancy | sed 's/[ \t]\{1,\}/ /g' | grep '^[^_]\+_v[0-9]\+_[^_]\+_[^_]\+ [^ ]\+' | cut -d' ' -f1,2 | tr ' ' '_' | tr '\n' ' ')`
-)
+// const (
+// 	STATUS_MONITOR_CHECK_COMMAND = `echo $(free -m | sed '1,2d' | head -n1 | grep --only '[0-9]\+$') $(sudo lxc-ls --fancy | sed 's/[ \t]\{1,\}/ /g' | grep '^[^_]\+_v[0-9]\+_[^_]\+_[^_]\+ [^ ]\+' | cut -d' ' -f1,2 | tr ' ' '_' | tr '\n' ' ')`
+// )
 
 // var (
 // 	nodeStatusRequestChannel = make(chan NodeStatusRequest)

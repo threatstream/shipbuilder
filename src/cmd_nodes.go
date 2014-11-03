@@ -135,6 +135,7 @@ func (this *Server) Node_Add(conn net.Conn, addresses []string) error {
 					} else {
 						fmt.Fprintf(titleLogger, "Adding node: %v\n", result.address)
 						cfg.Nodes = append(cfg.Nodes, &Node{result.address})
+						this.SystemDynoState.RegisterHost(result.address)
 					}
 					numRemaining--
 					if numRemaining == 0 {
@@ -155,7 +156,9 @@ func (this *Server) Node_List(conn net.Conn) error {
 	return this.WithConfig(func(cfg *Config) error {
 		for _, node := range cfg.Nodes {
 			nodeStatus := this.SystemDynoState.GetHostState(node.Host)
-			if nodeStatus.Error == nil {
+			if nodeStatus == nil {
+				fmt.Fprintf(dimLogger, "%v (no status was found for this node)\n", node.Host)
+			} else if nodeStatus.Error == nil {
 				fmt.Fprintf(dimLogger, "%v (%vMB free)\n", node.Host, nodeStatus.FreeMemoryMb)
 				for _, dyno := range nodeStatus.Dynos {
 					fmt.Fprintf(dimLogger, "    `- %v\n", dyno.Info())
@@ -189,6 +192,8 @@ func (this *Server) Node_Remove(conn net.Conn, addresses []string) error {
 			}
 			if keep {
 				nNodes = append(nNodes, node)
+			} else {
+				this.SystemDynoState.RemoveHost(node.Host)
 			}
 		}
 		cfg.Nodes = nNodes

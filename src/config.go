@@ -59,7 +59,10 @@ const (
 	DYNO_START_TIMEOUT_SECONDS          = 120
 	LOAD_BALANCER_SYNC_TIMEOUT_SECONDS  = 45
 	NODE_SYNC_TIMEOUT_SECONDS           = 180
-	STATUS_MONITOR_INTERVAL_SECONDS     = 15
+
+	DYNO_STATE_MONITOR_FILE_PATH    = "/tmp/dyno_state.log"
+	MEMORY_MONITOR_FILE_PATH        = "/tmp/memory.log"
+	MEMORY_MONITOR_INTERVAL_SECONDS = "30"
 
 	DYNO_PORT_ALLOCATION_START = 10000
 	DYNO_PORT_ALLOCATION_END   = 12000
@@ -68,7 +71,9 @@ const (
 
 	// Timeout after the server fails to response to polling every N seconds X times.
 	// Total timeout = (alive interval * alive count max) seconds.
-	DEFAULT_PERSISTENT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
+	//
+	// "-C" is for compression of all TCP connections and data streams.
+	DEFAULT_PERSISTENT_SSH_PARAMETERS = "-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -C"
 )
 
 var (
@@ -112,6 +117,17 @@ var (
 	ntpServers     = "0.pool.ntp.org 1.pool.ntp.org time.apple.com time.windows.com"
 	ntpSyncCommand = "sudo --non-interactive service ntp stop && sudo /usr/sbin/ntpdate " + ntpServers + " && sudo --non-interactive service ntp start"
 )
+
+// Invoke all package initialization functions here.
+func init() {
+	// Only initialize templates/build-pack info if *not* running in server-mode.
+	if len(os.Args) > 1 && os.Args[1] != "server" {
+		return
+	}
+	initDynoTemplates()
+	initScriptTemplates()
+	initBuildPackDiscovery()
+}
 
 func (this *Application) LxcDir() string {
 	return LXC_DIR + "/" + this.Name
@@ -518,7 +534,7 @@ func (this *Server) SyncLoadBalancers(e *Executor, addDynos []*Dyno, removeDynos
 					return
 				}
 				err = e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+lb,
-					`sudo --non-interactive /bin/bash -c 'if [ "$(sudo --non-interactive service haproxy status)" = "haproxy not running." ]; then sudo --non-interactive service haproxy start; else sudo --non-interactive service haproxy reload; fi'`,
+					`sudo --non-interactive /bin/bash -c 'if [ "$(sudo --non-interactive service haproxy status)" = "haproxy not running." ] ; then sudo --non-interactive service haproxy start ; else sudo --non-interactive service haproxy reload ; fi'`,
 				)
 				if err != nil {
 					c <- err

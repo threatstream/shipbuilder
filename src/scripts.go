@@ -461,12 +461,7 @@ var (
 	BUILD_PACKS    = map[string]*template.Template{}
 )
 
-func init() {
-	// Only validate templates if not running in server-mode.
-	if len(os.Args) > 1 && os.Args[1] != "server" {
-		return
-	}
-
+func initScriptTemplates() {
 	template.Must(UPSTART.Parse(`
 console none
 
@@ -576,7 +571,10 @@ backend load_balancer
     stats auth {{.HaProxyCredentials}}
 {{end}}
 `))
+}
 
+// Discover available build packs and map to templates.
+func initBuildPackDiscovery() {
 	// Discover all available build-packs.
 	listing, err := ioutil.ReadDir(DIRECTORY + "/build-packs")
 	if err != nil {
