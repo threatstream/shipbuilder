@@ -30,7 +30,7 @@ func (this *Executor) Run(name string, args ...string) error {
 
 // Run a pre-quoted bash command.
 func (this *Executor) BashCmd(cmd string) error {
-	return this.Run("sudo", "--non-interactive", "/bin/bash", "-c", cmd)
+	return this.Run("sudo", "-n", "/bin/bash", "-c", cmd)
 }
 
 // Check if a container exists locally.
@@ -42,7 +42,7 @@ func (this *Executor) ContainerExists(name string) bool {
 // Start a local container.
 func (this *Executor) StartContainer(name string) error {
 	if this.ContainerExists(name) {
-		return this.Run("sudo", "--non-interactive", "lxc-start", "-d", "-n", name)
+		return this.Run("sudo", "-n", "lxc-start", "-d", "-n", name)
 	}
 	return nil // Don't operate on non-existent containers.
 }
@@ -50,7 +50,7 @@ func (this *Executor) StartContainer(name string) error {
 // Stop a local container.
 func (this *Executor) StopContainer(name string) error {
 	if this.ContainerExists(name) {
-		return this.Run("sudo", "--non-interactive", "lxc-stop", "-k", "-n", name)
+		return this.Run("sudo", "-n", "lxc-stop", "-k", "-n", name)
 	}
 	return nil // Don't operate on non-existent containers.
 }
@@ -64,7 +64,7 @@ func (this *Executor) DestroyContainer(name string) error {
 		if lxcFs == "zfs" {
 			return this.zfsDestroyContainerAndChildren(name)
 		} else {
-			return this.Run("sudo", "--non-interactive", "lxc-destroy", "-n", name)
+			return this.Run("sudo", "-n", "lxc-destroy", "-n", name)
 		}
 	}
 	return nil // Don't operate on non-existent containers.
@@ -74,8 +74,8 @@ func (this *Executor) DestroyContainer(name string) error {
 // Recursively destroys children of the requested container before destroying.  This should only be invoked by an Executor to destroy containers.
 func (this *Executor) zfsDestroyContainerAndChildren(name string) error {
 	// NB: This is not working yet, and may not be required.
-	/* fmt.Fprintf(this.logger, "sudo --non-interactive /bin/bash -c \""+`zfs list -t snapshot | grep --only-matching '^`+zfsPool+`/`+name+`@[^ ]\+' | sed 's/^`+zfsPool+`\/`+name+`@//'`+"\"\n")
-	childrenBytes, err := exec.Command("sudo", "--non-interactive", "/bin/bash", "-c", `zfs list -t snapshot | grep --only-matching '^`+zfsPool+`/`+name+`@[^ ]\+' | sed 's/^`+zfsPool+`\/`+name+`@//'`).Output()
+	/* fmt.Fprintf(this.logger, "sudo -n /bin/bash -c \""+`zfs list -t snapshot | grep --only-matching '^`+zfsPool+`/`+name+`@[^ ]\+' | sed 's/^`+zfsPool+`\/`+name+`@//'`+"\"\n")
+	childrenBytes, err := exec.Command("sudo", "-n", "/bin/bash", "-c", `zfs list -t snapshot | grep --only-matching '^`+zfsPool+`/`+name+`@[^ ]\+' | sed 's/^`+zfsPool+`\/`+name+`@//'`).Output()
 	if err != nil {
 		// Allude to one possible cause and rememdy for the failure.
 		return fmt.Errorf("zfs snapshot listing failed- check that 'listsnapshots' is enabled for "+zfsPool+" ('zpool set listsnapshots=on "+zfsPool+"'), error=%v", err)
@@ -87,17 +87,17 @@ func (this *Executor) zfsDestroyContainerAndChildren(name string) error {
 		if len(child) > 0 {
 			this.StopContainer(child)
 			this.zfsDestroyContainerAndChildren(child)
-			this.zfsRunAndResistDatasetIsBusy("sudo", "--non-interactive", "zfs", "destroy", "-R", zfsPool+"/"+name+"@"+child)
-			err = this.zfsRunAndResistDatasetIsBusy("sudo", "--non-interactive", "lxc-destroy", "-n", child)
+			this.zfsRunAndResistDatasetIsBusy("sudo", "-n", "zfs", "destroy", "-R", zfsPool+"/"+name+"@"+child)
+			err = this.zfsRunAndResistDatasetIsBusy("sudo", "-n", "lxc-destroy", "-n", child)
 			//err := this.zfsDestroyContainerAndChildren(child)
 			if err != nil {
 				return err
 			}
 		}
-		//this.Run("sudo", "--non-interactive", "zfs", "destroy", zfsPool+"/"+name+"@"+child)
+		//this.Run("sudo", "-n", "zfs", "destroy", zfsPool+"/"+name+"@"+child)
 	}*/
-	this.zfsRunAndResistDatasetIsBusy("sudo", "--non-interactive", "zfs", "destroy", "-R", zfsPool+"/"+name)
-	err := this.zfsRunAndResistDatasetIsBusy("sudo", "--non-interactive", "lxc-destroy", "-n", name)
+	this.zfsRunAndResistDatasetIsBusy("sudo", "-n", "zfs", "destroy", "-R", zfsPool+"/"+name)
+	err := this.zfsRunAndResistDatasetIsBusy("sudo", "-n", "lxc-destroy", "-n", name)
 	if err != nil {
 		return err
 	}
@@ -122,13 +122,13 @@ func (this *Executor) zfsRunAndResistDatasetIsBusy(cmd string, args ...string) e
 
 // Clone a local container.
 func (this *Executor) CloneContainer(oldName, newName string) error {
-	return this.Run("sudo", "--non-interactive", "lxc-clone", "-s", "-B", lxcFs, "-o", oldName, "-n", newName)
+	return this.Run("sudo", "-n", "lxc-clone", "-s", "-B", lxcFs, "-o", oldName, "-n", newName)
 }
 
 // Run a command in a local container.
 func (this *Executor) AttachContainer(name string, args ...string) *exec.Cmd {
 	// Add hosts entry for container name to avoid error upon entering shell: "sudo: unable to resolve host `name`".
-	err := exec.Command("sudo", "--non-interactive", "/bin/bash", "-c", `echo "127.0.0.1`+"\t"+name+`" | sudo --non-interactive tee -a `+LXC_DIR+"/"+name+`/rootfs/etc/hosts`).Run()
+	err := exec.Command("sudo", "-n", "/bin/bash", "-c", `echo "127.0.0.1`+"\t"+name+`" | sudo -n tee -a `+LXC_DIR+"/"+name+`/rootfs/etc/hosts`).Run()
 	if err != nil {
 		fmt.Fprintf(this.logger, "warn: host fix command failed for container '%v': %v\n", name, err)
 	}
@@ -140,8 +140,8 @@ func (this *Executor) AttachContainer(name string, args ...string) *exec.Cmd {
 		command += strings.Join(args, " ")
 	}
 	prefixedArgs := []string{
-		"--non-interactive", "lxc-attach", "-n", name, "--",
-		"sudo", "--non-interactive", "-u", "ubuntu", "-n", "-i", "--",
+		"-n", "lxc-attach", "-n", name, "--",
+		"sudo", "-n", "-u", "ubuntu", "-n", "-i", "--",
 		"/bin/bash", "-c", command,
 	}
 	fmt.Printf("AttachContainer name=%v, completeCommand=sudo %v\n", name, args)

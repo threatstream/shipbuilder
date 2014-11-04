@@ -23,18 +23,18 @@ done`
 /usr/bin/envdir ` + ENV_DIR + ` /bin/bash`
 
 	// # Cleanup old versions on the shipbuilder build box (only old versions, not the newest/latest version).
-	// sudo --non-interactive lxc-ls --fancy | grep --only-matching '^[^ ]\+_v[0-9]\+ *STOPPED' | sed 's/^\([^ ]\+\)\(_v\)\([0-9]\+\) .*/\1 \3 \1\2\3/' | sort -t' ' -k 1,2 -g | awk -F ' ' '$1==app{ printf ",%s", $2 ; next } { app=$1 ; printf "\n%s %s", $1, $2 } END { printf "\n" }' | grep '^[^ ]\+ [0-9]\+,' | sed 's/,[0-9]\+$//' | awk -F ' ' '{ split($2,arr,",") ; for (i in arr) printf "%s_v%s\n", $1, arr[i] }' | xargs -n1 -IX bash -c 'attempts=0; rc=1; while [ $rc -ne 0 ] && [ $attempts -lt 10 ] ; do echo "rc=${rc}, attempts=${attempts} X"; sudo --non-interactive lxc-destroy -n X; rc=$?; attempts=$(($attempts + 1)); done'
+	// sudo -n lxc-ls --fancy | grep --only-matching '^[^ ]\+_v[0-9]\+ *STOPPED' | sed 's/^\([^ ]\+\)\(_v\)\([0-9]\+\) .*/\1 \3 \1\2\3/' | sort -t' ' -k 1,2 -g | awk -F ' ' '$1==app{ printf ",%s", $2 ; next } { app=$1 ; printf "\n%s %s", $1, $2 } END { printf "\n" }' | grep '^[^ ]\+ [0-9]\+,' | sed 's/,[0-9]\+$//' | awk -F ' ' '{ split($2,arr,",") ; for (i in arr) printf "%s_v%s\n", $1, arr[i] }' | xargs -n1 -IX bash -c 'attempts=0; rc=1; while [ $rc -ne 0 ] && [ $attempts -lt 10 ] ; do echo "rc=${rc}, attempts=${attempts} X"; sudo -n lxc-destroy -n X; rc=$?; attempts=$(($attempts + 1)); done'
 
 	// # Cleanup old zfs container volumes not in use (primarily intended to run on nodes and sb server).
-	// containers=$(sudo --non-interactive lxc-ls --fancy | sed "1,2d" | cut -f1 -d" ") ; for x in $(sudo --non-interactive zfs list | sed "1d" | cut -d" " -f1); do if [ "${x}" = "tank" ] || [ "${x}" = "tank/git" ] || [ "${x}" = "tank/lxc" ]; then echo "skipping bare tank, git, or lxc: ${x}"; continue; fi; if [ -n "$(echo $x | grep '@')" ]; then search=$(echo $x | sed "s/^.*@//"); else search=$(echo $x | sed "s/^[^\/]\+\///"); fi; if [ -z "$(echo -e "${containers}" | grep "${search}")" ]; then echo "destroying non-container zfs volume: $x" ; sudo --non-interactive zfs destroy $x; fi; done
+	// containers=$(sudo -n lxc-ls --fancy | sed "1,2d" | cut -f1 -d" ") ; for x in $(sudo -n zfs list | sed "1d" | cut -d" " -f1); do if [ "${x}" = "tank" ] || [ "${x}" = "tank/git" ] || [ "${x}" = "tank/lxc" ]; then echo "skipping bare tank, git, or lxc: ${x}"; continue; fi; if [ -n "$(echo $x | grep '@')" ]; then search=$(echo $x | sed "s/^.*@//"); else search=$(echo $x | sed "s/^[^\/]\+\///"); fi; if [ -z "$(echo -e "${containers}" | grep "${search}")" ]; then echo "destroying non-container zfs volume: $x" ; sudo -n zfs destroy $x; fi; done
 
 	// # Cleanup empty container dirs.
-	// for dir in $(find /var/lib/lxc/ -maxdepth 1 -type d | grep '.*_v[0-9]\+_.*_[0-9]\+'); do if test "${dir}" = '.' || test -z "$(echo "${dir}" | sed 's/\/var\/lib\/lxc\///')"; then continue; fi; count=$(find "${dir}/rootfs/" | head -n 3 | wc -l); if test $count -eq 1; then echo $dir $count; echo sudo --non-interactive rm -rf $dir; fi; done
+	// for dir in $(find /var/lib/lxc/ -maxdepth 1 -type d | grep '.*_v[0-9]\+_.*_[0-9]\+'); do if test "${dir}" = '.' || test -z "$(echo "${dir}" | sed 's/\/var\/lib\/lxc\///')"; then continue; fi; count=$(find "${dir}/rootfs/" | head -n 3 | wc -l); if test $count -eq 1; then echo $dir $count; echo sudo -n rm -rf $dir; fi; done
 
 	ZFS_MAINTENANCE = `#!/usr/bin/env bash
 
 # Cleanup old versions on the shipbuilder build box (only old versions, not the newest/latest version).
-sudo --non-interactive lxc-ls --fancy | \
+sudo -n lxc-ls --fancy | \
     grep --only-matching '^[^ ]\+_v[0-9]\+ *STOPPED' | \
     sed 's/^\([^ ]\+\)\(_v\)\([0-9]\+\) .*/\1 \3 \1\2\3/' | \
     sort -t' ' -k 1,2 -g | \
@@ -42,11 +42,11 @@ sudo --non-interactive lxc-ls --fancy | \
     grep '^[^ ]\+ [0-9]\+,' | \
     sed 's/,[0-9]\+$//' | \
     awk -F ' ' '{ split($2,arr,",") ; for (i in arr) printf "%s_v%s\n", $1, arr[i] }' | \
-    xargs -n1 -IX bash -c 'attempts=0; rc=1; while [ $rc -ne 0 ] && [ $attempts -lt 10 ] ; do echo "rc=${rc}, attempts=${attempts} X"; sudo --non-interactive lxc-destroy -n X; rc=$?; attempts=$(($attempts + 1)); done'
+    xargs -n1 -IX bash -c 'attempts=0; rc=1; while [ $rc -ne 0 ] && [ $attempts -lt 10 ] ; do echo "rc=${rc}, attempts=${attempts} X"; sudo -n lxc-destroy -n X; rc=$?; attempts=$(($attempts + 1)); done'
 
 # Cleanup old zfs container volumes not in use (primarily intended to run on nodes and sb server).
-containers=$(sudo --non-interactive lxc-ls --fancy | sed "1,2d" | cut -f1 -d" ")
-for x in $(sudo --non-interactive zfs list | sed "1d" | cut -d" " -f1); do
+containers=$(sudo -n lxc-ls --fancy | sed "1,2d" | cut -f1 -d" ")
+for x in $(sudo -n zfs list | sed "1d" | cut -d" " -f1); do
     if [ "${x}" = "tank" ] || [ "${x}" = "tank/git" ] || [ "${x}" = "tank/lxc" ]; then
         echo "skipping bare tank, git, or lxc: ${x}"
         continue
@@ -58,7 +58,7 @@ for x in $(sudo --non-interactive zfs list | sed "1d" | cut -d" " -f1); do
     fi
     if [ -z "$(echo -e "${containers}" | grep "${search}")" ]; then
         echo "destroying non-container zfs volume: $x"
-        sudo --non-interactive zfs destroy $x
+        sudo -n zfs destroy $x
     fi
 done
 
@@ -70,7 +70,7 @@ for dir in $(find /var/lib/lxc/ -maxdepth 1 -type d | grep '.*_v[0-9]\+_.*_[0-9]
     count=$(find "${dir}/rootfs/" | head -n 3 | wc -l)
     if test $count -eq 1; then
         echo $dir $count
-        sudo --non-interactive rm -rf $dir
+        sudo -n rm -rf $dir
     fi
 done
 
@@ -83,8 +83,8 @@ exit $?`
 //     exit 1
 // fi
 
-// sudo --non-interactive lxc-ls --fancy | sed '1,2d' | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/"
-// sudo --non-interactive lxc-monitor '.*'
+// sudo -n lxc-ls --fancy | sed '1,2d' | sed 's/ \{1,\}/ /g' | cut -d' ' -f1,2 | sed "s/\(.*\) \(.*\)/'\1' changed state to [\2]/"
+// sudo -n lxc-monitor '.*'
 
 // exit $?`
 )

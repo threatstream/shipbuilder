@@ -76,7 +76,7 @@ func (this *Server) sysRemoveOrphanedReleaseSnapshots(logger io.Writer) error {
 
 	e := Executor{logger}
 
-	err := e.BashCmd(`sudo --non-interactive find /tmp -xdev -mmin +120 -size +25M -wholename '*_v*.tar.gz' -exec  rm -f {} \;`)
+	err := e.BashCmd(`sudo -n find /tmp -xdev -mmin +120 -size +25M -wholename '*_v*.tar.gz' -exec  rm -f {} \;`)
 
 	return err
 }
@@ -102,7 +102,7 @@ func SyncNtpForHost(host string, logger io.Writer) error {
 }
 
 func (this *Server) sysSyncNtp(logger io.Writer) error {
-	// sudo --non-interactive service ntp stop && sudo /usr/sbin/ntpdate 0.pool.ntp.org 1.pool.ntp.org time.apple.com time.windows.com && sudo --non-interactive service ntp start
+	// sudo -n service ntp stop && sudo /usr/sbin/ntpdate 0.pool.ntp.org 1.pool.ntp.org time.apple.com time.windows.com && sudo -n service ntp start
 
 	type SyncResult struct {
 		host string

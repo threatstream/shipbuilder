@@ -8,13 +8,13 @@ import (
 )
 
 func (this *Server) SyncContainer(e Executor, address string, container string, cloneOrCreateArgs ...string) error {
-	e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+address, "sudo --non-interactive lxc-stop -k -n "+container+"; sudo --non-interactive lxc-destroy -n "+container)
+	e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+address, "sudo -n lxc-stop -k -n "+container+"; sudo -n lxc-destroy -n "+container)
 	err := e.Run("ssh", append(
 		[]string{
 			DEFAULT_NODE_USERNAME + "@" + address,
-			"sudo", "--non-interactive", "test", "-e", LXC_DIR + "/" + container, "&&",
+			"sudo", "-n", "test", "-e", LXC_DIR + "/" + container, "&&",
 			"echo", "not creating/cloning image '" + container + "', already exists", "||",
-			"sudo", "--non-interactive",
+			"sudo", "-n",
 		},
 		cloneOrCreateArgs...,
 	)...)
@@ -22,7 +22,7 @@ func (this *Server) SyncContainer(e Executor, address string, container string, 
 		return err
 	}
 	// Rsync the base container over.
-	err = e.Run("sudo", "--non-interactive", "rsync",
+	err = e.Run("sudo", "-n", "rsync",
 		"--recursive",
 		"--links",
 		"--perms",
