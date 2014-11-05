@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func (this *Server) validateAppName(applicationName string) error {
+func ValidateAppName(applicationName string) error {
 	forbiddenNames := []string{"base"}
 	for bp, _ := range BUILD_PACKS {
 		forbiddenNames = append(forbiddenNames, "base-"+bp)
@@ -27,7 +27,7 @@ func (this *Server) validateAppName(applicationName string) error {
 	return nil
 }
 
-func (this *Server) validateBuildPack(buildPack string) error {
+func ValidateBuildPack(buildPack string) error {
 	_, ok := BUILD_PACKS[buildPack]
 	if !ok {
 		validChoices := []string{}
@@ -39,11 +39,45 @@ func (this *Server) validateBuildPack(buildPack string) error {
 	return nil
 }
 
+// Initialize a new git repo for an app.
+func AppInitHookedGitRepo(e *Executor, applicationName string) error {
+	var err error
+	for _, command := range []string{
+		"rm -rf " + GIT_DIRECTORY + "/" + applicationName,
+		"git init --bare " + GIT_DIRECTORY + "/" + applicationName,                                               // Create git repo.
+		"cd " + GIT_DIRECTORY + "/" + applicationName + " && git symbolic-ref HEAD refs/heads/not-a-real-branch", // Make master deletable.
+		"chmod -R 777 " + GIT_DIRECTORY + "/" + applicationName,
+	} {
+		err = e.Run("sudo", "-n", "/bin/bash", "-c", command)
+		if err != nil {
+			break
+		}
+	}
+	if err != nil {
+		return err
+	}
+	// Add pre receive hook
+	err = ioutil.WriteFile(
+		GIT_DIRECTORY+"/"+applicationName+"/hooks/pre-receive",
+		[]byte(PRE_RECEIVE),
+		0777,
+	)
+	if err != nil {
+		return err
+	}
+	err = ioutil.WriteFile(
+		GIT_DIRECTORY+"/"+applicationName+"/hooks/post-receive",
+		[]byte(POST_RECEIVE),
+		0777,
+	)
+	return err
+}
+
 func (this *Server) Apps_Create(conn net.Conn, applicationName string, buildPack string) error {
 	return this.WithPersistentConfig(func(cfg *Config) error {
 		applicationName = strings.ToLower(applicationName) // Always lowercase.
 
-		err := this.validateAppName(applicationName)
+		err := ValidateAppName(applicationName)
 		if err != nil {
 			return err
 		}
@@ -55,7 +89,7 @@ func (this *Server) Apps_Create(conn net.Conn, applicationName string, buildPack
 			}
 		}
 
-		err = this.validateBuildPack(buildPack)
+		err = ValidateBuildPack(buildPack)
 		if err != nil {
 			return err
 		}
@@ -63,31 +97,7 @@ func (this *Server) Apps_Create(conn net.Conn, applicationName string, buildPack
 		dimLogger := NewFormatter(NewTimeLogger(NewMessageLogger(conn)), DIM)
 		e := Executor{dimLogger}
 
-		for _, command := range []string{
-			"git init --bare " + GIT_DIRECTORY + "/" + applicationName,                                               // Create git repo.
-			"cd " + GIT_DIRECTORY + "/" + applicationName + " && git symbolic-ref HEAD refs/heads/not-a-real-branch", // Make master deletable.
-			"chmod -R 777 " + GIT_DIRECTORY + "/" + applicationName,
-		} {
-			err = e.Run("sudo", "-n", "/bin/bash", "-c", command)
-			if err != nil {
-				return err
-			}
-		}
-
-		// Add pre receive hook
-		err = ioutil.WriteFile(
-			GIT_DIRECTORY+"/"+applicationName+"/hooks/pre-receive",
-			[]byte(PRE_RECEIVE),
-			0777,
-		)
-		if err != nil {
-			return err
-		}
-		err = ioutil.WriteFile(
-			GIT_DIRECTORY+"/"+applicationName+"/hooks/post-receive",
-			[]byte(POST_RECEIVE),
-			0777,
-		)
+		err = AppInitHookedGitRepo(&e, applicationName)
 		if err != nil {
 			return err
 		}
@@ -108,7 +118,7 @@ func (this *Server) Apps_Create(conn net.Conn, applicationName string, buildPack
 }
 
 func (this *Server) Apps_Destroy(conn net.Conn, applicationName string) error {
-	err := this.validateAppName(applicationName)
+	err := ValidateAppName(applicationName)
 	if err != nil {
 		return err
 	}
