@@ -109,15 +109,15 @@ func (this *Deployment) createContainer() error {
 		fmt.Fprintf(titleLogger, "App image container already exists\n")
 	}
 
-	e.BashCmd("rm -rf " + this.Application.AppDir() + "/*")
-	e.BashCmd("mkdir -p " + this.Application.SrcDir())
+	e.SudoBashCmd("rm -rf " + this.Application.AppDir() + "/*")
+	e.SudoBashCmd("mkdir -p " + this.Application.SrcDir())
 	// Copy the ShipBuilder binary into the container.
-	this.err = e.BashCmd("cp " + EXE + " " + this.Application.AppDir() + "/" + BINARY)
+	this.err = e.SudoBashCmd("cp " + EXE + " " + this.Application.AppDir() + "/" + BINARY)
 	if this.err != nil {
 		return this.err
 	}
 	// Export the source to the container.  Use `--depth 1` to omit the history which wasn't going to be used anyways.
-	this.err = e.BashCmd("git clone --depth 1 " + this.Application.GitDir() + " " + this.Application.SrcDir())
+	this.err = e.SudoBashCmd("git clone --depth 1 " + this.Application.GitDir() + " " + this.Application.SrcDir())
 	if this.err != nil {
 		return this.err
 	}
@@ -129,23 +129,23 @@ func (this *Deployment) createContainer() error {
 	}
 
 	// Checkout the given revision.
-	this.err = e.BashCmd("cd " + this.Application.SrcDir() + " && git checkout -q -f " + this.Revision)
+	this.err = e.SudoBashCmd("cd " + this.Application.SrcDir() + " && git checkout -q -f " + this.Revision)
 	if this.err != nil {
 		return this.err
 	}
 	// Convert references to submodules to be read-only.
-	this.err = e.BashCmd(`test -f '` + this.Application.SrcDir() + `/.gitmodules' && echo 'git: converting submodule refs to be read-only' && sed -i 's,git@github.com:,git://github.com/,g' '` + this.Application.SrcDir() + `/.gitmodules' || echo 'git: project does not appear to have any submodules'`)
+	this.err = e.SudoBashCmd(`test -f '` + this.Application.SrcDir() + `/.gitmodules' && echo 'git: converting submodule refs to be read-only' && sed -i 's,git@github.com:,git://github.com/,g' '` + this.Application.SrcDir() + `/.gitmodules' || echo 'git: project does not appear to have any submodules'`)
 	if this.err != nil {
 		return this.err
 	}
 	// Update the submodules.
-	this.err = e.BashCmd("cd " + this.Application.SrcDir() + " && git submodule init && git submodule update")
+	this.err = e.SudoBashCmd("cd " + this.Application.SrcDir() + " && git submodule init && git submodule update")
 	if this.err != nil {
 		return this.err
 	}
 	// Clear out and remove all git files from the container; they are unnecessary from this point forward.
 	// NB: If this command fails, don't abort anything, just log the error.
-	ignorableErr := e.BashCmd(`find ` + this.Application.SrcDir() + ` . -regex '^.*\.git\(ignore\|modules\|attributes\)?$' -exec rm -rf {} \; 1>/dev/null 2>/dev/null`)
+	ignorableErr := e.SudoBashCmd(`find ` + this.Application.SrcDir() + ` . -regex '^.*\.git\(ignore\|modules\|attributes\)?$' -exec rm -rf {} \; 1>/dev/null 2>/dev/null`)
 	if ignorableErr != nil {
 		fmt.Fprintf(dimLogger, ".git* cleanup failed: %v\n", ignorableErr)
 	}
@@ -154,11 +154,11 @@ func (this *Deployment) createContainer() error {
 
 func (this *Deployment) prepareEnvironmentVariables(e *Executor) error {
 	// Write out the environmental variables.
-	err := e.BashCmd("rm -rf " + this.Application.AppDir() + "/env")
+	err := e.SudoBashCmd("rm -rf " + this.Application.AppDir() + "/env")
 	if err != nil {
 		return err
 	}
-	err = e.BashCmd("mkdir -p " + this.Application.AppDir() + "/env")
+	err = e.SudoBashCmd("mkdir -p " + this.Application.AppDir() + "/env")
 	if err != nil {
 		return err
 	}
@@ -174,7 +174,7 @@ func (this *Deployment) prepareEnvironmentVariables(e *Executor) error {
 func (this *Deployment) prepareShellEnvironment(e *Executor) error {
 	// Update the container's /etc/passwd file to use the `envdirbash` script and /app/src as the user's home directory.
 	escapedAppSrc := strings.Replace(this.Application.LocalSrcDir(), "/", `\/`, -1)
-	err := e.Run("sudo", "-n",
+	err := e.RunSudo(
 		"sed", "-i",
 		`s/^\(`+DEFAULT_NODE_USERNAME+`:.*:\):\/home\/`+DEFAULT_NODE_USERNAME+`:\/bin\/bash$/\1:`+escapedAppSrc+`:\/bin\/bash/g`,
 		this.Application.RootFsDir()+"/etc/passwd",
@@ -183,7 +183,7 @@ func (this *Deployment) prepareShellEnvironment(e *Executor) error {
 		return err
 	}
 	// Move /home/<user>/.ssh to the new home directory in /app/src
-	err = e.BashCmd("cp -a /home/" + DEFAULT_NODE_USERNAME + "/.[a-zA-Z0-9]* " + this.Application.SrcDir() + "/")
+	err = e.SudoBashCmd("cp -a /home/" + DEFAULT_NODE_USERNAME + "/.[a-zA-Z0-9]* " + this.Application.SrcDir() + "/")
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func (this *Deployment) prepareShellEnvironment(e *Executor) error {
 
 func (this *Deployment) prepareAppFilePermissions(e *Executor) error {
 	// Chown the app src & output to default user by grepping the uid+gid from /etc/passwd in the container.
-	return e.BashCmd(
+	return e.SudoBashCmd(
 		"touch " + this.Application.AppDir() + "/out && " +
 			"chown $(cat " + this.Application.RootFsDir() + "/etc/passwd | grep '^" + DEFAULT_NODE_USERNAME + ":' | cut -d':' -f3,4) " +
 			this.Application.AppDir() + " && " +
@@ -204,23 +204,23 @@ func (this *Deployment) prepareAppFilePermissions(e *Executor) error {
 // Disable unnecessary services in container.
 func (this *Deployment) prepareDisabledServices(e *Executor) error {
 	// Disable `ondemand` power-saving service by unlinking it from /etc/rc*.d.
-	err := e.BashCmd(`find ` + this.Application.RootFsDir() + `/etc/rc*.d/ -wholename '*/S*ondemand' -exec unlink {} \;`)
+	err := e.SudoBashCmd(`find ` + this.Application.RootFsDir() + `/etc/rc*.d/ -wholename '*/S*ondemand' -exec unlink {} \;`)
 	if err != nil {
 		return err
 	}
 	// Disable `ntpdate` client from being triggered when networking comes up.
-	err = e.BashCmd(`chmod a-x ` + this.Application.RootFsDir() + `/etc/network/if-up.d/ntpdate`)
+	err = e.SudoBashCmd(`chmod a-x ` + this.Application.RootFsDir() + `/etc/network/if-up.d/ntpdate`)
 	if err != nil {
 		return err
 	}
 	// Disable auto-start for unnecessary services in /etc/init/*.conf, such as: SSH, rsyslog, cron, tty1-6, and udev.
 	for _, service := range []string{"ssh", "rsyslog", "cron", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6", "udev"} {
-		err = e.BashCmd("echo 'manual' > " + this.Application.RootFsDir() + "/etc/init/" + service + ".override")
+		err = e.SudoBashCmd("echo 'manual' > " + this.Application.RootFsDir() + "/etc/init/" + service + ".override")
 		if err != nil {
 			return err
 		}
 	}
-	err = e.BashCmd(`sed -i 's/^NTPSERVERS=".*"$/NTPSERVERS=""/' /etc/default/ntpdate`)
+	err = e.SudoBashCmd(`sed -i 's/^NTPSERVERS=".*"$/NTPSERVERS=""/' /etc/default/ntpdate`)
 	if err != nil {
 		return err
 	}
@@ -339,7 +339,7 @@ func (this *Deployment) archive() error {
 	go func() {
 		e = Executor{NewLogger(os.Stdout, "[archive] ")}
 		archiveName := "/tmp/" + versionedContainerName + ".tar.gz"
-		err := e.BashCmd("tar --create --gzip --preserve-permissions --file " + archiveName + " " + this.Application.RootFsDir())
+		err := e.SudoBashCmd("tar --create --gzip --preserve-permissions --file " + archiveName + " " + this.Application.RootFsDir())
 		if err != nil {
 			return
 		}
@@ -351,7 +351,7 @@ func (this *Deployment) archive() error {
 		defer func(archiveName string, e Executor) {
 			fmt.Fprintf(e.logger, "Closing filehandle and removing archive file \"%v\"\n", archiveName)
 			h.Close()
-			e.BashCmd("rm -f " + archiveName)
+			e.SudoBashCmd("rm -f " + archiveName)
 		}(archiveName, e)
 		stat, err := h.Stat()
 		if err != nil {
@@ -382,7 +382,7 @@ func (this *Deployment) extract(version string) error {
 		fmt.Fprintf(this.Logger, "Syncing local copy of %v\n", version)
 		// Rsync to versioned container to base app container.
 		rsyncCommand := "rsync --recursive --links --hard-links --devices --specials --acls --owner --group --perms --times --delete --xattrs --numeric-ids "
-		return e.BashCmd(rsyncCommand + LXC_DIR + "/" + versionedAppContainer + "/rootfs/ " + this.Application.RootFsDir())
+		return e.SudoBashCmd(rsyncCommand + LXC_DIR + "/" + versionedAppContainer + "/rootfs/ " + this.Application.RootFsDir())
 	}
 
 	// The requested app version doesn't exist locally, attempt to download it from S3.
@@ -411,11 +411,11 @@ func extractAppFromS3(e *Executor, app *Application, version string) error {
 	}
 
 	fmt.Fprintf(e.logger, "Extracting %v\n", localArchive)
-	err = e.BashCmd("rm -rf " + app.RootFsDir() + "/*")
+	err = e.SudoBashCmd("rm -rf " + app.RootFsDir() + "/*")
 	if err != nil {
 		return err
 	}
-	err = e.BashCmd("tar -C / --extract --gzip --preserve-permissions --file " + localArchive)
+	err = e.SudoBashCmd("tar -C / --extract --gzip --preserve-permissions --file " + localArchive)
 	if err != nil {
 		return err
 	}
@@ -427,8 +427,7 @@ func (this *Deployment) syncNode(node *Node) error {
 	e := Executor{logger}
 
 	// TODO: Maybe add fail check to clone operation.
-	err := e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+node.Host,
-		"sudo", "-n", "/bin/bash", "-c",
+	err := e.Run("ssh", DEFAULT_NODE_USERNAME+"@"+node.Host, "sudo", "-n", "/bin/bash", "-c",
 		`"test ! -d '`+LXC_DIR+`/`+this.Application.Name+`' && lxc-clone -B `+lxcFs+` -s -o base-`+this.Application.BuildPack+` -n `+this.Application.Name+` || echo 'app image already exists'"`,
 	)
 	if err != nil {
@@ -437,7 +436,7 @@ func (this *Deployment) syncNode(node *Node) error {
 	}
 	// Rsync the application container over.
 	//rsync --recursive --links --hard-links --devices --specials --owner --group --perms --times --acls --delete --xattrs --numeric-ids
-	err = e.Run("sudo", "-n", "rsync",
+	err = e.RunSudo("rsync",
 		"--recursive",
 		"--links",
 		"--hard-links",

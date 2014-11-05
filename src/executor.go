@@ -28,8 +28,16 @@ func (this *Executor) Run(name string, args ...string) error {
 	return err
 }
 
-// Run a pre-quoted bash command.
+func (this *Executor) RunSudo(name string, args ...string) error {
+	return this.Run("sudo", append([]string{"-n", name}, args...)...)
+}
+
 func (this *Executor) BashCmd(cmd string) error {
+	return this.Run("/bin/bash", "-c", cmd)
+}
+
+// Run a pre-quoted bash command.
+func (this *Executor) SudoBashCmd(cmd string) error {
 	return this.Run("sudo", "-n", "/bin/bash", "-c", cmd)
 }
 
@@ -122,7 +130,7 @@ func (this *Executor) zfsRunAndResistDatasetIsBusy(cmd string, args ...string) e
 
 // Clone a local container.
 func (this *Executor) CloneContainer(oldName, newName string) error {
-	return this.Run("sudo", "-n", "lxc-clone", "-s", "-B", lxcFs, "-o", oldName, "-n", newName)
+	return this.RunSudo("lxc-clone", "-s", "-B", lxcFs, "-o", oldName, "-n", newName)
 }
 
 // Run a command in a local container.
@@ -140,7 +148,8 @@ func (this *Executor) AttachContainer(name string, args ...string) *exec.Cmd {
 		command += strings.Join(args, " ")
 	}
 	prefixedArgs := []string{
-		"-n", "lxc-attach", "-n", name, "--",
+		"-n",
+		"lxc-attach", "-n", name, "--",
 		"sudo", "-n", "-u", "ubuntu", "-n", "-i", "--",
 		"/bin/bash", "-c", command,
 	}

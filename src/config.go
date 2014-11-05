@@ -115,7 +115,7 @@ var (
 
 var (
 	ntpServers     = "0.pool.ntp.org 1.pool.ntp.org time.apple.com time.windows.com"
-	ntpSyncCommand = "sudo -n service ntp stop && sudo /usr/sbin/ntpdate " + ntpServers + " && sudo -n service ntp start"
+	ntpSyncCommand = "sudo -n service ntp stop && sudo -n /usr/sbin/ntpdate " + ntpServers + " && sudo -n service ntp start"
 )
 
 // Invoke all package initialization functions here.

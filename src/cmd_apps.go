@@ -48,7 +48,7 @@ func AppInitHookedGitRepo(e *Executor, applicationName string) error {
 		"cd " + GIT_DIRECTORY + "/" + applicationName + " && git symbolic-ref HEAD refs/heads/not-a-real-branch", // Make master deletable.
 		"chmod -R 777 " + GIT_DIRECTORY + "/" + applicationName,
 	} {
-		err = e.Run("sudo", "-n", "/bin/bash", "-c", command)
+		err = e.SudoBashCmd(command)
 		if err != nil {
 			break
 		}
@@ -160,7 +160,7 @@ func (this *Server) Apps_Destroy(conn net.Conn, applicationName string) error {
 		}
 		if gitPathExists {
 			fmt.Fprint(dimLogger, "Removing git path: %v\n", gitPath)
-			e.Run("sudo", "-n", "rm", "-r", gitPath)
+			e.RunSudo("rm", "-r", gitPath)
 		}
 
 		lxcContainerExists, err := PathExists(LXC_DIR + "/" + applicationName)

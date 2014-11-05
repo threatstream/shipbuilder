@@ -22,7 +22,7 @@ func (this *Server) SyncContainer(e Executor, address string, container string, 
 		return err
 	}
 	// Rsync the base container over.
-	err = e.Run("sudo", "-n", "rsync",
+	err = e.RunSudo("rsync",
 		"--recursive",
 		"--links",
 		"--perms",

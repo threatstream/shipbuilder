@@ -76,7 +76,7 @@ func (this *Server) sysRemoveOrphanedReleaseSnapshots(logger io.Writer) error {
 
 	e := Executor{logger}
 
-	err := e.BashCmd(`sudo -n find /tmp -xdev -mmin +120 -size +25M -wholename '*_v*.tar.gz' -exec  rm -f {} \;`)
+	err := e.SudoBashCmd(`find /tmp -xdev -mmin +120 -size +25M -wholename '*_v*.tar.gz' -exec  rm -f {} \;`)
 
 	return err
 }
@@ -130,7 +130,7 @@ func (this *Server) sysSyncNtp(logger io.Writer) error {
 
 	// Special case (no SSH required): Run locally on SB server.
 	e := Executor{NewLogger(logger, "[localhost] ")}
-	err = e.BashCmd(ntpSyncCommand)
+	err = e.SudoBashCmd(ntpSyncCommand)
 	syncResult := SyncResult{"localhost", err}
 
 	failureCount := 0
