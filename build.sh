@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 test -z "$(which go)" && echo 'fatal: no "go" binary found, make sure go-lang is installed and available in a directory in $PATH' 1>&2 && exit 1
 test -z "$(which envdir)" && echo 'fatal: no "envdir" binary found, make sure daemontools is installed and and available in $PATH' 1>&2 && exit 1
 
-test ! -d './env' && echo 'fatal: missing "env" configuration directory, see "Compilation" in the README' 1>&2 && exit 1
+test ! -d './env' && echo 'fatal: missing "env" configuration directory, see "Project Compilation" in the CLIENT.md' 1>&2 && exit 1
 
 if test "$1" == '-u' || test "$1" == '--update'; then
     forceUpdate=1
@@ -89,4 +89,3 @@ else
 fi
 
 exit $buildResult
-
